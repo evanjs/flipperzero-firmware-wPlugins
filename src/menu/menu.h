@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../plugin_api.h"
+
 #include <gui/gui.h>
 #include <storage/storage.h>
 
@@ -10,9 +12,8 @@ enum class Action { Quit, Launch, Generate };
 
 struct Result {
     Action action = Action::Quit;
-    char path[256] = {0}; // full data path of the .fcw save to open or create
-    uint8_t chunks = 16;  // requested world size for Action::Generate
-    uint32_t seed = 0;    // parsed seed for Action::Generate
+    char path[256] = {0};       // full data path of the .fcw save to open or create
+    FlipcraftWorldParams params{0, 16, 0}; // what the creation screen was left at
 };
 
 // Owns its own ViewDispatcher; the caller keeps ownership of gui and storage.

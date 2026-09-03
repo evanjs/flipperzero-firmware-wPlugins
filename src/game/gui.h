@@ -28,6 +28,8 @@ struct Screen2D {
 
     void number(int x,int y,int d);
     void itemIcon(int x,int y,int type,bool onDark=false);
+    void blockIcon(int x,int y,uint8_t blockId,bool onDark=false);
+    void blockSlot(int x,int y,int w,uint8_t blockId,bool onDark);
     void slotItem(int x,int y,int w,const ItemCell& it,bool onDark);
     void heart(int x,int y,bool full);
     void arrow(int x,int y);

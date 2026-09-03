@@ -3,3 +3,6 @@ build/
 .venv/
 *.pyc
 __pycache__
+dist/
+lib/
+.vscode/

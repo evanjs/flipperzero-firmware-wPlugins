@@ -520,7 +520,8 @@ static void putU32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
-static bool generate(int chunks, uint32_t seed, Writer out, Progress progress, void* pctx) {
+static bool generate(int chunks, uint32_t seed, uint8_t flags, Writer out, Progress progress,
+                     void* pctx) {
     if(chunks < 1 || chunks > MAX_CHUNKS) return false;
     if(chunks > TILE_CHUNKS && chunks % TILE_CHUNKS != 0) return false;
     g_seed = seed;
@@ -547,6 +548,9 @@ static bool generate(int chunks, uint32_t seed, Writer out, Progress progress, v
     putU32(hdr + 26, (uint32_t)(sbz * BLOCKSIZE));
     hdr[30] = 0x08;
     putU32(hdr + 32, seed);
+    // Per-world settings (plugin_api.h). Polarised so a zero byte -- every
+    // world written before this field existed -- means the old behaviour.
+    hdr[36] = flags;
     if(!out.writeAt(out.ctx, 0, hdr, sizeof(hdr))) return false;
 
     // Zero the whole tile-entity region so unwritten slots read as free.

@@ -1,4 +1,6 @@
 #pragma once
+#include "plugin_api.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -116,6 +118,16 @@ struct ItemCell {
     bool empty() const { return type == 0; }
 };
 
+// Everything the player can hold in creative. Same list as FlipcraftRTX: the
+// creative "inventory" is nothing but an index into this, there are no item
+// stacks and nothing is ever consumed.
+constexpr uint8_t BLOCK_PALETTE[] = {
+    BLOCK_GRASS, BLOCK_DIRT, BLOCK_STONE, BLOCK_COBBLE, BLOCK_LOG, BLOCK_LEAVES,
+    BLOCK_PLANK, BLOCK_COALORE, BLOCK_IRONORE, BLOCK_SAND, BLOCK_GLASS,
+    BLOCK_TABLE, BLOCK_FURNACE, BLOCK_CHEST, BLOCK_DYNAMITE,
+};
+constexpr int PALETTE_COUNT = (int)(sizeof(BLOCK_PALETTE) / sizeof(BLOCK_PALETTE[0]));
+
 enum Entity : uint8_t {
     ENTITY_STICK = 0x1, ENTITY_DIRT = 0x2, ENTITY_APPLE = 0x3, ENTITY_COBBLE = 0x4,
     ENTITY_LOG = 0x5, ENTITY_LEAVES = 0x6, ENTITY_PLANK = 0x7, ENTITY_COAL = 0x8,
@@ -202,6 +214,22 @@ constexpr float BOB_SPEED        = 0.35f;
 constexpr float BOB_EASE         = 0.20f;
 constexpr float CAM_BOB_AMPLITUDE= 1.3f;
 
+// Shaders (FlipcraftFlagShaders). One fixed sun, 50 degrees above the horizon
+// and 20 degrees off the +X axis, so no shadow runs exactly along a block edge
+// and a glass pane throws a legible grid instead of a smear. Deliberately not
+// the RTX day/night arc: a sun that never moves means the baked shadows are
+// computed once per chunk load and never go stale on their own, which is the
+// whole reason this is affordable here.
+//   (cos50*cos20, sin50, cos50*sin20)
+constexpr float SUN_DIR_X = 0.60402f;
+constexpr float SUN_DIR_Y = 0.76604f;
+constexpr float SUN_DIR_Z = 0.21985f;
+// Voxel boundaries a shadow ray may cross before it is declared unobstructed.
+constexpr int SHADOW_MAX_STEPS = 24;
+// Per-chunk budget of 8x8 masks for faces the shadow edge cuts through; faces
+// past it fall back to a uniform lit/dark state (see bakeFaceShadow).
+constexpr int SHADOW_MASKS_PER_CHUNK = 96;
+
 // floor(x) -> int without a libm call. vcvt truncates toward zero (1 cycle on
 // M4F), so correct downward for negatives that have a fractional part.
 inline int ifloor(float x) {
@@ -232,6 +260,21 @@ struct World {
     bool    opened = false;
     int     chunksX = WORLD_CHUNKS_X, chunksZ = WORLD_CHUNKS_Z;
 
+    // Per-world settings byte from the header (plugin_api.h). Zero -- what
+    // every world written before the field existed still holds -- decodes to
+    // the original behaviour, so old saves and bundled templates are unchanged.
+    uint8_t  hdrFlags = 0;
+    uint8_t  mode() const   { return (uint8_t)(hdrFlags & FlipcraftFlagModeMask); }
+    bool     mobsOn() const { return !(hdrFlags & FlipcraftFlagMobsOff); }
+    bool     shadersOn() const { return (hdrFlags & FlipcraftFlagShaders) != 0; }
+    bool     farDraw() const   { return !(hdrFlags & FlipcraftFlagNearOnly); }
+    bool     creative() const  { return mode() == FlipcraftModeCreative; }
+    bool     hardcore() const  { return mode() == FlipcraftModeHardcore; }
+
+    // Chunk offsets a block's shadow falls into. The sun never moves, so these
+    // are constants; they stay fields to keep bumpShadowed readable.
+    int8_t   shadeDX = -1, shadeDZ = -1;
+
     int      hdrPX = 0, hdrPY = 0, hdrPZ = 0;
     uint8_t  hdrRot = 0x08;
     uint32_t hdrRng = 0x1234;
@@ -257,6 +300,17 @@ struct World {
         int sx = cx % 3, sz = cz % 3;
         if (slotCX[sx][sz] == cx && slotCZ[sx][sz] == cz) slotGen[sx][sz]++;
     }
+    // Every resident chunk: all baked shadows are stale.
+    void bumpAll() {
+        for (auto& col : slotGen) for (auto& g : col) g++;
+    }
+    // The chunk itself plus the three the sun throws its shadows into.
+    void bumpShadowed(int cx, int cz) {
+        bumpGen(cx, cz);
+        bumpGen(cx + shadeDX, cz);
+        bumpGen(cx, cz + shadeDZ);
+        bumpGen(cx + shadeDX, cz + shadeDZ);
+    }
 
     void setBlock(int x, int y, int z, uint8_t id) {
         if ((unsigned)x >= (unsigned)worldSX() || (unsigned)y >= (unsigned)WORLD_SY ||
@@ -270,6 +324,9 @@ struct World {
         revision++;
         slotDirty[sx][sz] = true;
         slotGen[sx][sz]++;
+        // With traced shadows the block's own shadow lands down-light of it,
+        // so those chunks re-bake even though their own blocks did not change.
+        if (shadersOn()) bumpShadowed(cx, cz);
         // Edits on a chunk border also change which faces the neighbour shows.
         int lx = x & CHUNK_MASK, lz = z & CHUNK_MASK;
         if (lx == 0) bumpGen(cx - 1, cz); else if (lx == CHUNK_MASK) bumpGen(cx + 1, cz);
@@ -321,6 +378,7 @@ struct Framebuffer {
 };
 
 const char* itemName(uint8_t type);
+const char* blockName(uint8_t blockId);
 
 // 8-byte row-packed 8x8 texture: bit `u` of byte `v` is texel (u, v).
 const uint8_t* texturePacked(int texId);

@@ -6,7 +6,8 @@
 
 namespace flipcraft {
 
-enum ScreenId { SCR_PLAY, SCR_INVENTORY, SCR_CRAFTING, SCR_FURNACE, SCR_CHEST, SCR_GAMEOVER };
+enum ScreenId { SCR_PLAY, SCR_INVENTORY, SCR_CRAFTING, SCR_FURNACE, SCR_CHEST,
+                SCR_PICKER, SCR_GAMEOVER };
 
 struct Input {
     int  forward=0;
@@ -24,7 +25,8 @@ struct Input {
 // All persistent player-visible state. Tools occupy the 0xF0..0xFF type range
 // and never stack (count is always 1).
 struct PlayerState {
-    ItemCell inventory[15];
+    ItemCell inventory[15];    // survival only; creative has no stacks at all
+    uint8_t sel = 0;           // creative: index into BLOCK_PALETTE
     uint8_t invSlot = 0;       // selected hotbar slot, 0..4
     ItemCell craftGrid[9];
     ItemCell craftOutput;
@@ -82,6 +84,9 @@ public:
     int velYsub = 0, posYsub = 0;
 
     ScreenId screenId = SCR_PLAY;
+    // Hardmode death: the session ends and the host is asked to remove the
+    // save. Only the host can, the world file is still open in here.
+    bool exitDelete = false;
     std::vector<ItemEnt> items;
     Mob mobs[MAX_MOBS];
     std::vector<BlockEnt> tiles;
@@ -99,6 +104,9 @@ public:
     void simulate(const Input& in);
     bool render();
     ItemCell guiCursorItem(int* sx,int* sy);
+    uint8_t pickerCursorBlock(int* sx,int* sy);
+    bool creative() const { return world.creative(); }
+    bool hardcore() const { return world.hardcore(); }
 
 private:
     uint8_t rng();
@@ -157,6 +165,15 @@ private:
     void guiFrame(const Input& in);
     void drawGui();
     void tryCraft();
+
+    // Creative block picker, as in FlipcraftRTX: the palette laid out
+    // PICKER_COLS wide, picking one just moves pl.sel. It replaces the
+    // inventory screen while creative is on -- there is no inventory.
+    static constexpr int PICKER_COLS = 5;
+    static constexpr int PICKER_CELL = 10;
+    void pickerCell(int index,int& sx,int& sy) const;
+    void pickerFrame(const Input& in);
+    void drawPicker();
     int cursor = 0;
     int selSlot = -1;
     bool gameOverPending=false;

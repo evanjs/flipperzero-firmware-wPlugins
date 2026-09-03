@@ -89,6 +89,10 @@ bool World::tryOpenAndReadHeader(const char* path) {
     hdrPZ = (int)get_u32(hdr + 26);
     hdrRot = hdr[30];
     hdrRng = get_u32(hdr + 32);
+    // Settings byte. v1/v2 worlds and every template predate it and carry a
+    // zero here, which decodes to the original behaviour by construction.
+    hdrFlags = hdr[FLIPCRAFT_HDR_FLAGS_OFFSET];
+    if(mode() > FlipcraftModeCreative) hdrFlags &= (uint8_t)~FlipcraftFlagModeMask;
     return true;
 }
 
@@ -405,7 +409,10 @@ void World::closeWorld(int px, int py, int pz, uint8_t rot, uint32_t rng) {
     if(!opened) return;
     save();
 
-    uint8_t buf[20];
+    // Exactly the player record, offsets 18..35. It must not reach byte 36:
+    // that is the per-world settings byte, and writing past 35 here silently
+    // reset every world's gamemode and shader flags on the way out.
+    uint8_t buf[18];
     memset(buf, 0, sizeof(buf));
     put_u32(buf + 0, (uint32_t)px);
     put_u32(buf + 4, (uint32_t)py);
@@ -413,6 +420,7 @@ void World::closeWorld(int px, int py, int pz, uint8_t rot, uint32_t rng) {
     buf[12] = rot;
     buf[13] = 0;
     put_u32(buf + 14, rng);
+    static_assert(sizeof(buf) == FLIPCRAFT_HDR_FLAGS_OFFSET - 18, "player record would clobber the flags byte");
     if(storage_file_seek(file, 18, true)) storage_file_write(file, buf, sizeof(buf));
     storage_file_sync(file);
     storage_file_close(file);
