@@ -68,7 +68,7 @@ Requires [ufbt](https://github.com/flipperdevices/flipperzero-ufbt) targeting Mo
 ufbt update --index-url=https://up.momentum-fw.dev/firmware/directory.json
 
 # Build
-cd flipper-paranoia-momentum
+cd flipper-paranoia
 ufbt
 
 # Build + deploy over USB
