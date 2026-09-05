@@ -2,7 +2,7 @@ sourcecode:
   type: git
   location:
     origin: https://github.com/apfxtech/Flipcraft.git
-    commit_sha: 0000
+    commit_sha: c58ab3f1c78cb4110acea1a3567260b822fa43f4
 
 short_description: Flipcraft is a real voxel survival sandbox for Flipper Zero
 description: "@.catalog/APPSTORE.md"
