@@ -13,6 +13,7 @@ static constexpr uint16_t FCW_VERSION = 3;
 static constexpr uint32_t HEADER_SIZE = 64;
 static constexpr uint8_t INVENTORY_MAGIC = 0xA6;    // v3; v2 used 0xA5
 static constexpr uint8_t INVENTORY_MAGIC_V2 = 0xA5;
+static constexpr uint8_t FLUSH_IDLE_TICKS = 25;   // ~2 s at the 80 ms tick
 
 static inline void put_u16(uint8_t* p, uint16_t v) {
     p[0] = v;
@@ -128,6 +129,8 @@ bool World::openWorld(const char* dataPath) {
             slotMaxY[sx][sz] = -1;
             slotDirty[sx][sz] = false;
             slotGen[sx][sz] = 0;
+            slotBox[sx][sz] = {1, 0, 1, 0, 1, 0};
+            slotIdle[sx][sz] = 0;
         }
     centerCX = centerCZ = -2;
     loadPending = false;
@@ -276,15 +279,29 @@ bool World::flushSlot(int sx, int sz) {
     return ok;
 }
 
-// A slot's content changed: invalidate its cached mesh and the meshes of the
-// four adjacent chunks, whose boundary faces depend on this chunk's blocks.
+// A slot's content changed: invalidate its cached mesh, the meshes of the
+// four adjacent chunks, whose boundary faces depend on this chunk's blocks,
+// and with shaders every chunk its shadow can fall into. Each is told the
+// whole chunk changed; the renderer works out which faces that can reach.
+static World::DirtyBox chunkBox(int cx, int cz, int top) {
+    const int x0 = cx << CHUNK_SHIFT, z0 = cz << CHUNK_SHIFT;
+    return {(int16_t)x0, (int16_t)(x0 + CHUNK_MASK), (int16_t)z0, (int16_t)(z0 + CHUNK_MASK),
+            0, (int8_t)top};
+}
+
 void World::onSlotLoaded(int cx, int cz) {
     revision++; // a freshly streamed chunk must reach the next rendered frame
-    bumpGen(cx, cz);
-    bumpGen(cx - 1, cz);
-    bumpGen(cx + 1, cz);
-    bumpGen(cx, cz - 1);
-    bumpGen(cx, cz + 1);
+    const DirtyBox all = chunkBox(cx, cz, WORLD_SY - 1);
+    bumpRegion(cx, cz, all);
+    bumpRegion(cx - 1, cz, all);
+    bumpRegion(cx + 1, cz, all);
+    bumpRegion(cx, cz - 1, all);
+    bumpRegion(cx, cz + 1, all);
+    // Its blocks reach no higher than its top layer, so neither do its shadows.
+    // A chunk leaving the ring is deliberately not undone: its blocks are
+    // still there, so the shadows it threw stay until something re-bakes them.
+    const int top = slotMaxY[cx % 3][cz % 3];
+    if(shadersOn() && top >= 0) bumpReach(chunkBox(cx, cz, top));
 }
 
 bool World::loadChunkDirect(int cx, int cz) {
@@ -338,63 +355,59 @@ void World::updateWindow(int blockX, int blockZ, bool immediate) {
         cz = 0;
     else if(cz >= chunksZ)
         cz = chunksZ - 1;
-    if(cx == centerCX && cz == centerCZ && !loadPending) return;
+    if(cx == centerCX && cz == centerCZ && !loadPending) {
+        // Quiet tick: write one settled dirty chunk back now, so a later
+        // eviction never pays the read-modify-write on top of its own read.
+        for(int sx = 0; sx < WINDOW_CHUNKS; sx++)
+            for(int sz = 0; sz < WINDOW_CHUNKS; sz++) {
+                if(!slotDirty[sx][sz] || slotCX[sx][sz] < 0) continue;
+                if(slotIdle[sx][sz] < FLUSH_IDLE_TICKS) {
+                    slotIdle[sx][sz]++;
+                    continue;
+                }
+                flushSlot(sx, sz);
+                return;
+            }
+        return;
+    }
     centerCX = cx;
     centerCZ = cz;
 
-    if(immediate) {
-        // Load every missing chunk of the ring now, coalescing horizontal runs
-        // into one sequential read per row.
-        for(int ncz = cz - 1; ncz <= cz + 1; ncz++) {
-            if(ncz < 0 || ncz >= chunksZ) continue;
-            int run0 = -1, run1 = -1;
-            for(int ncx = cx - 1; ncx <= cx + 1; ncx++) {
-                bool valid = (ncx >= 0 && ncx < chunksX);
-                bool resident = valid && slotCX[ncx % 3][ncz % 3] == ncx &&
-                                slotCZ[ncx % 3][ncz % 3] == ncz;
-                if(valid && !resident) {
-                    if(run0 < 0) run0 = ncx;
-                    run1 = ncx;
-                } else if(run0 >= 0) {
-                    int n = run1 - run0 + 1;
-                    if(n == 1)
-                        loadChunkDirect(run0, ncz);
-                    else
-                        loadRunStaged(run0, ncz, n);
-                    run0 = -1;
-                }
+    // The missing chunks of the ring, row by row: file order, so every seek
+    // runs forward and FatFS never walks the cluster chain from the start of
+    // the file, and a row's run of missing chunks is one sequential read.
+    // Streaming mode stops after the first transfer and comes back next tick:
+    // the player covers at most half a block per tick while the freshly
+    // entered ring is still RENDER_RADIUS_BLOCKS away, so spreading the
+    // loads over a few ticks is invisible but removes the multi-chunk stall
+    // from a single frame.
+    bool done = false;
+    loadPending = false;
+    for(int ncz = cz - 1; ncz <= cz + 1; ncz++) {
+        if(ncz < 0 || ncz >= chunksZ) continue;
+        int run0 = -1, run1 = -1;
+        for(int ncx = cx - 1; ncx <= cx + 2; ncx++) { // one past the end closes the last run
+            const bool missing = ncx <= cx + 1 && ncx >= 0 && ncx < chunksX &&
+                                 !(slotCX[ncx % 3][ncz % 3] == ncx && slotCZ[ncx % 3][ncz % 3] == ncz);
+            if(missing) {
+                if(run0 < 0) run0 = ncx;
+                run1 = ncx;
+                continue;
             }
-            if(run0 >= 0) {
+            if(run0 < 0) continue;
+            if(immediate || !done) {
                 int n = run1 - run0 + 1;
                 if(n == 1)
                     loadChunkDirect(run0, ncz);
                 else
                     loadRunStaged(run0, ncz, n);
+                done = true;
+            } else {
+                loadPending = true;
             }
+            run0 = -1;
         }
-        loadPending = false;
-        return;
     }
-
-    // Streaming mode: one SD read per tick, nearest chunk first. The player
-    // covers at most half a block per tick while the freshly-entered ring is
-    // still RENDER_RADIUS_BLOCKS away, so spreading the loads over a few ticks
-    // is invisible but removes the multi-chunk stall from a single frame.
-    static const int8_t kOrder[9][2] = {
-        {0,0}, {-1,0}, {1,0}, {0,-1}, {0,1}, {-1,-1}, {1,-1}, {-1,1}, {1,1}};
-    int missing = 0, firstCX = 0, firstCZ = 0;
-    for(const auto& o : kOrder) {
-        int ncx = cx + o[0], ncz = cz + o[1];
-        if(ncx < 0 || ncx >= chunksX || ncz < 0 || ncz >= chunksZ) continue;
-        if(slotCX[ncx % 3][ncz % 3] == ncx && slotCZ[ncx % 3][ncz % 3] == ncz) continue;
-        if(missing == 0) {
-            firstCX = ncx;
-            firstCZ = ncz;
-        }
-        missing++;
-    }
-    if(missing) loadChunkDirect(firstCX, firstCZ);
-    loadPending = missing > 1;
 }
 
 void World::save() {

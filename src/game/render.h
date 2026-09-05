@@ -10,6 +10,7 @@ struct Vertex { float x=0, y=0, z=0, u=0, v=0; };
 //   bits 0-2  local x        bits 3-5  local z      bits 6-9   y
 //   bits 10-14 quad id       bits 15-22 texture id  bits 23-26 settings
 //   bits 27-28 sun state: 0 lit, 1 shadowed, 2 per-texel mask in `masks`
+//   bit 29 the face wanted a mask but the chunk's mask budget was spent
 // Rebuilt only when the chunk content changes (World::slotGen mismatch), so a
 // frame never scans voxels and never casts a ray -- it just walks these lists.
 // `masks` holds one 8-byte lit mask per face flagged 2, in face order, and
@@ -57,7 +58,7 @@ public:
     void clearBuffer();
     // Drop all cached chunk meshes; call when a different world is opened.
     void invalidateChunkMeshes();
-    float sinYaw() const, cosYaw() const;
+    int sinYaw() const, cosYaw() const;   // floor(64*(-sin)), floor(64*cos) of the yaw
     float camDir(int axis) const;
 
     void renderScene(const World& w);
@@ -75,7 +76,7 @@ private:
     // chunk ring is spread over a few frames instead of stalling one. Without
     // shaders a rebuild is cheap and deferring it would only leave holes on
     // screen, so the whole ring goes in one frame.
-    static constexpr int REBUILDS_PER_FRAME = 2;
+    static constexpr int REBUILDS_PER_FRAME = 4;
 
     void camRotToMatrix(int pitchIndex,int yawIndex);
     void renderBox(float x0,float y0,float z0,float x1,float y1,float z1,

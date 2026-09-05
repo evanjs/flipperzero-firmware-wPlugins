@@ -63,8 +63,11 @@ static MeshEntry makeCube(uint8_t top, uint8_t topS, uint8_t bot, uint8_t botS,
     return e;
 }
 
-static MeshEntry g_blockMesh[32];
-static MeshEntry g_itemMesh[32];
+// Ids past the last defined mesh read as empty, exactly as their zero rows did.
+constexpr int MESH_IDS = 18;
+static_assert(BLOCK_DYNAMITE < MESH_IDS && ENTITY_GUNPOWDER < MESH_IDS, "mesh table too small");
+static MeshEntry g_blockMesh[MESH_IDS];
+static MeshEntry g_itemMesh[MESH_IDS];
 static const MeshEntry g_emptyMesh{};
 static bool g_meshReady = false;
 
@@ -151,8 +154,8 @@ static void initMesh() {
       g_itemMesh[ENTITY_GUNPOWDER] = e; }
 }
 
-const MeshEntry& meshBlock(uint8_t id) { initMesh(); return (id < 32) ? g_blockMesh[id] : g_emptyMesh; }
-const MeshEntry& meshItem(uint8_t hi)  { initMesh(); return (hi < 32) ? g_itemMesh[hi] : g_emptyMesh; }
+const MeshEntry& meshBlock(uint8_t id) { initMesh(); return (id < MESH_IDS) ? g_blockMesh[id] : g_emptyMesh; }
+const MeshEntry& meshItem(uint8_t hi)  { initMesh(); return (hi < MESH_IDS) ? g_itemMesh[hi] : g_emptyMesh; }
 
 static constexpr MobSpec MOB_SPECS[MOB_SPECIES] = {
     {TEX_SHEEPFRONT, TEX_SHEEPSIDE, TEX_SHEEPTOP,

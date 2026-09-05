@@ -256,6 +256,12 @@ struct World {
     // chunk (re)load, or an edit on a shared face of a neighbouring chunk).
     // The renderer compares it against its cached mesh and rebuilds lazily.
     uint16_t slotGen[WINDOW_CHUNKS][WINDOW_CHUNKS];
+    // World-space box of the cells changed since the slot's mesh was last
+    // baked (x0 > x1: nothing). The renderer re-bakes only the faces whose
+    // shadow rays can cross it, carries the rest over, then empties it.
+    struct DirtyBox { int16_t x0, x1, z0, z1; int8_t y0, y1; };
+    mutable DirtyBox slotBox[WINDOW_CHUNKS][WINDOW_CHUNKS];
+    uint8_t slotIdle[WINDOW_CHUNKS][WINDOW_CHUNKS];  // ticks since the last edit while dirty
 
     int     centerCX = -2, centerCZ = -2;
     bool    loadPending = false; // chunks of the current ring still on disk
@@ -277,10 +283,6 @@ struct World {
     bool     creative() const  { return mode() == FlipcraftModeCreative; }
     bool     hardcore() const  { return mode() == FlipcraftModeHardcore; }
 
-    // Chunk offsets a block's shadow falls into. The sun never moves, so these
-    // are constants; they stay fields to keep bumpShadowed readable.
-    int8_t   shadeDX = -1, shadeDZ = -1;
-
     int      hdrPX = 0, hdrPY = 0, hdrPZ = 0;
     uint8_t  hdrRot = 0x08;
     uint32_t hdrRng = 0x1234;
@@ -300,22 +302,54 @@ struct World {
         return BLOCK_AIR;
     }
 
-    // Invalidate the cached mesh of chunk (cx,cz) if it is resident.
-    void bumpGen(int cx, int cz) {
-        if ((unsigned)cx >= (unsigned)chunksX || (unsigned)cz >= (unsigned)chunksZ) return;
-        int sx = cx % 3, sz = cz % 3;
-        if (slotCX[sx][sz] == cx && slotCZ[sx][sz] == cz) slotGen[sx][sz]++;
+    // Block array of chunk (cx,cz) if it is resident, with its slot; else null.
+    const uint8_t* chunkData(int cx, int cz, int& sx, int& sz) const {
+        if ((unsigned)cx >= (unsigned)chunksX || (unsigned)cz >= (unsigned)chunksZ) return nullptr;
+        sx = cx % 3; sz = cz % 3;
+        if (slotCX[sx][sz] != cx || slotCZ[sx][sz] != cz) return nullptr;
+        return &slot[sx][sz][0][0][0];
+    }
+
+    static DirtyBox cellBox(int x, int y, int z) {
+        return {(int16_t)x, (int16_t)x, (int16_t)z, (int16_t)z, (int8_t)y, (int8_t)y};
+    }
+    // Invalidate the cached mesh of chunk (cx,cz) if it is resident, recording
+    // the world-space box of cells that changed.
+    void bumpRegion(int cx, int cz, const DirtyBox& r) {
+        int sx, sz;
+        if (!chunkData(cx, cz, sx, sz)) return;
+        slotGen[sx][sz]++;
+        DirtyBox& b = slotBox[sx][sz];
+        if (b.x0 > b.x1) { b = r; return; }
+        if (r.x0 < b.x0) b.x0 = r.x0;
+        if (r.x1 > b.x1) b.x1 = r.x1;
+        if (r.z0 < b.z0) b.z0 = r.z0;
+        if (r.z1 > b.z1) b.z1 = r.z1;
+        if (r.y0 < b.y0) b.y0 = r.y0;
+        if (r.y1 > b.y1) b.y1 = r.y1;
+    }
+    // Every resident chunk a shadow ray can reach the changed box from: the
+    // sun sits at +x +z, so the box shades chunks down-light of it, up to
+    // 0.8 blocks in x and 0.3 in z per block of height (see rayCanReach).
+    void bumpReach(const DirtyBox& r) {
+        const int h = r.y1 + 2, rx = (h * 4 + 4) / 5 + 1, rz = (h * 3 + 9) / 10 + 1;
+        for (int sx = 0; sx < WINDOW_CHUNKS; sx++)
+            for (int sz = 0; sz < WINDOW_CHUNKS; sz++) {
+                const int cx = slotCX[sx][sz], cz = slotCZ[sx][sz];
+                if (cx < 0) continue;
+                const int X0 = cx << CHUNK_SHIFT, Z0 = cz << CHUNK_SHIFT;
+                if (r.x1 - X0 < -1 || r.z1 - Z0 < -1) continue;
+                if (r.x0 - (X0 + CHUNK_MASK) > rx || r.z0 - (Z0 + CHUNK_MASK) > rz) continue;
+                bumpRegion(cx, cz, r);
+            }
     }
     // Every resident chunk: all baked shadows are stale.
     void bumpAll() {
-        for (auto& col : slotGen) for (auto& g : col) g++;
-    }
-    // The chunk itself plus the three the sun throws its shadows into.
-    void bumpShadowed(int cx, int cz) {
-        bumpGen(cx, cz);
-        bumpGen(cx + shadeDX, cz);
-        bumpGen(cx, cz + shadeDZ);
-        bumpGen(cx + shadeDX, cz + shadeDZ);
+        for (int sx = 0; sx < WINDOW_CHUNKS; sx++)
+            for (int sz = 0; sz < WINDOW_CHUNKS; sz++) {
+                slotGen[sx][sz]++;
+                slotBox[sx][sz] = {-32768, 32767, -32768, 32767, -128, 127};
+            }
     }
 
     void setBlock(int x, int y, int z, uint8_t id) {
@@ -329,14 +363,16 @@ struct World {
         cell = id;
         revision++;
         slotDirty[sx][sz] = true;
-        slotGen[sx][sz]++;
-        // With traced shadows the block's own shadow lands down-light of it,
-        // so those chunks re-bake even though their own blocks did not change.
-        if (shadersOn()) bumpShadowed(cx, cz);
+        slotIdle[sx][sz] = 0;
+        const DirtyBox c = cellBox(x, y, z);
+        bumpRegion(cx, cz, c);
+        // With traced shadows the block's shadow lands down-light of it, so
+        // those chunks re-bake the faces it can reach.
+        if (shadersOn()) bumpReach(c);
         // Edits on a chunk border also change which faces the neighbour shows.
         int lx = x & CHUNK_MASK, lz = z & CHUNK_MASK;
-        if (lx == 0) bumpGen(cx - 1, cz); else if (lx == CHUNK_MASK) bumpGen(cx + 1, cz);
-        if (lz == 0) bumpGen(cx, cz - 1); else if (lz == CHUNK_MASK) bumpGen(cx, cz + 1);
+        if (lx == 0) bumpRegion(cx - 1, cz, c); else if (lx == CHUNK_MASK) bumpRegion(cx + 1, cz, c);
+        if (lz == 0) bumpRegion(cx, cz - 1, c); else if (lz == CHUNK_MASK) bumpRegion(cx, cz + 1, c);
         if (id != BLOCK_AIR) {
             if (y > slotMaxY[sx][sz]) slotMaxY[sx][sz] = y;
         } else if (y == slotMaxY[sx][sz]) {

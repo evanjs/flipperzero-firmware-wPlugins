@@ -10,23 +10,46 @@ namespace flipcraft {
 static constexpr float PI = 3.14159265358979323846f;
 
 static float kFsin[16], kFcos[16];
-static float kSinYaw[16], kCosYaw[16];
+static int8_t kSinYaw[16], kCosYaw[16];
 
 // Per-block face textures for full cubes: [block][0 top, 1 bottom, 2 side].
 struct FaceTex { uint8_t tex, set; bool valid; };
 static FaceTex gFaceTex[32][3];
 
-// Pre-flattened mesh quads for the non-full blocks (sapling cross, chest box).
+// Pre-flattened mesh quads for the non-full blocks (sapling cross, chest box),
+// packed: gNonFullIdx maps a block id to its entry, 0xFF = none.
 struct NonFullQuad { uint8_t quad, tex, set; };
 struct NonFullMesh { uint8_t count; NonFullQuad q[8]; };
-static NonFullMesh gNonFull[32];
+constexpr int NONFULL_MESHES = __builtin_popcount(BLOCKS_NOT_FULL) - 1;   // air has none
+static NonFullMesh gNonFull[NONFULL_MESHES];
+static uint8_t gNonFullIdx[32];
 
-// Outward normal of every quad template and the sunlight it can receive:
-// 0 faces away from the sun, 1 grazing light, 2 direct light. The sun is
-// fixed (flipcraft.h), so both tables are built once and never touched again.
-static float gQuadNormal[QUAD_COUNT][3];
+// Sunlight every quad template can receive: 0 faces away from the sun,
+// 1 grazing light, 2 direct light. The sun is fixed (flipcraft.h), so the
+// table is built once and never touched again.
 static uint8_t gQuadLit[QUAD_COUNT];
 static const float gSun[3] = {SUN_DIR_X, SUN_DIR_Y, SUN_DIR_Z};
+// A shadow ray only ever moves towards +x, +y, +z (see sunVisible).
+static_assert(SUN_DIR_X > 0 && SUN_DIR_Y > 0 && SUN_DIR_Z > 0, "sunVisible assumes a +x +y +z sun");
+
+// Per rebuild: the highest block in the resident ring, and per slot the
+// highest block in any resident chunk a ray can still enter from that chunk
+// (chunks at >= cx and >= cz). A ray above that level meets nothing but air.
+static int8_t gReach[WINDOW_CHUNKS][WINDOW_CHUNKS];
+static int8_t gRingMaxY = WORLD_SY - 1;
+
+// Outward unit normal of a quad template.
+static void quadNormal(int q, float n[3]) {
+    const int (*t)[3] = quadTemplate(q);
+    const float e0[3] = {(float)(t[1][0]-t[0][0]), (float)(t[1][1]-t[0][1]), (float)(t[1][2]-t[0][2])};
+    const float e1[3] = {(float)(t[2][0]-t[1][0]), (float)(t[2][1]-t[1][1]), (float)(t[2][2]-t[1][2])};
+    n[0] = e0[1]*e1[2] - e0[2]*e1[1];
+    n[1] = e0[2]*e1[0] - e0[0]*e1[2];
+    n[2] = e0[0]*e1[1] - e0[1]*e1[0];
+    float len = sqrtf(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+    if (len < 1e-6f) len = 1.0f;
+    for (int k = 0; k < 3; k++) n[k] = n[k] / len;
+}
 
 // Axis-aligned faces are invisible unless the camera is on their front side;
 // this rejects roughly half of all cached faces with one compare, before any
@@ -51,24 +74,19 @@ static void initTables() {
         float a = PI * 2.0f * (i / 16.0f);
         kFsin[i] = sinf(a);
         kFcos[i] = cosf(a);
-        kSinYaw[i] = floorf(-sinf(a) * 64.0f);
-        kCosYaw[i] = floorf( cosf(a) * 64.0f);
+        kSinYaw[i] = (int8_t)floorf(-sinf(a) * 64.0f);
+        kCosYaw[i] = (int8_t)floorf( cosf(a) * 64.0f);
     }
 
     for (int q = 0; q < QUAD_COUNT; q++) {
-        const int (*t)[3] = quadTemplate(q);
-        const float e0[3] = {(float)(t[1][0]-t[0][0]), (float)(t[1][1]-t[0][1]), (float)(t[1][2]-t[0][2])};
-        const float e1[3] = {(float)(t[2][0]-t[1][0]), (float)(t[2][1]-t[1][1]), (float)(t[2][2]-t[1][2])};
-        float n[3] = {e0[1]*e1[2] - e0[2]*e1[1],
-                      e0[2]*e1[0] - e0[0]*e1[2],
-                      e0[0]*e1[1] - e0[1]*e1[0]};
-        float len = sqrtf(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
-        if (len < 1e-6f) len = 1.0f;
+        float n[3];
+        quadNormal(q, n);
         float dot = 0;
-        for (int k = 0; k < 3; k++) { gQuadNormal[q][k] = n[k] / len; dot += gQuadNormal[q][k] * gSun[k]; }
+        for (int k = 0; k < 3; k++) dot += n[k] * gSun[k];
         gQuadLit[q] = dot >= 0.65f ? 2 : (dot > 0.05f ? 1 : 0);
     }
 
+    int nfCount = 0;
     for (int id = 0; id < 32; id++) {
         const MeshEntry& m = meshBlock((uint8_t)id);
         for (int f = 0; f < 3; f++) {
@@ -76,15 +94,17 @@ static void initTables() {
             gFaceTex[id][f] = {valid ? m.textures[f].id : (uint8_t)0,
                                valid ? m.textures[f].settings : (uint8_t)0, valid};
         }
-        NonFullMesh& nf = gNonFull[id];
-        nf.count = 0;
-        if (m.exists && !blockIsFull((uint8_t)id)) {
+        gNonFullIdx[id] = 0xFF;
+        if (m.exists && !blockIsFull((uint8_t)id) && nfCount < NONFULL_MESHES) {
+            NonFullMesh& nf = gNonFull[nfCount];
+            nf.count = 0;
             for (int qi = 0; qi < m.quadCount && nf.count < 8; qi++) {
                 const MeshQuadRef& q = m.quads[qi];
                 if (q.texIndex >= m.texCount) continue;
                 nf.q[nf.count++] = {q.quadId, m.textures[q.texIndex].id,
                                     m.textures[q.texIndex].settings};
             }
+            gNonFullIdx[id] = (uint8_t)nfCount++;
         }
     }
     gTablesReady = true;
@@ -112,8 +132,8 @@ void Renderer::setShaders(bool on) {
     invalidateChunkMeshes();   // every cached mesh was baked the other way
 }
 
-float Renderer::sinYaw() const { return kSinYaw[yawIndex & 0xF]; }
-float Renderer::cosYaw() const { return kCosYaw[yawIndex & 0xF]; }
+int Renderer::sinYaw() const { return kSinYaw[yawIndex & 0xF]; }
+int Renderer::cosYaw() const { return kCosYaw[yawIndex & 0xF]; }
 float Renderer::camDir(int axis) const { return floorf(matrix[2][axis]*64.0f); }
 
 void Renderer::invalidateChunkMeshes() {
@@ -493,8 +513,8 @@ void Renderer::renderMob(float x,float y,float z,uint8_t species,uint8_t yaw,uin
 // which case only its ink texels do: glass throws the shadow of its frame and
 // lets the rest of the light through. `viaTex` reports that such a block was
 // crossed, so the caller knows the face needs a per-texel bake.
-static bool sunVisible(const World& w, float px, float py, float pz,
-                       const int own[3], bool& viaTex) {
+__attribute__((noinline)) static bool sunVisible(const World& w, float px, float py, float pz,
+                                                 const int own[3], bool& viaTex) {
     constexpr float FAR = 1e9f;
     int vx = ifloor(px), vy = ifloor(py), vz = ifloor(pz);
 
@@ -523,14 +543,30 @@ static bool sunVisible(const World& w, float px, float py, float pz,
     float tmy = (vy+1-py) * tdy;
     float tmz = gSun[2] != 0 ? (gSun[2] > 0 ? (vz+1-pz) : (pz-vz)) * tdz : FAR;
 
+    // The ray never comes back down, so once it is above every block it can
+    // still reach it is in open sky. The chunk it is in is resolved once per
+    // chunk crossed, not per step, and looked into only below that chunk's
+    // own top.
+    int ccx = INT32_MIN, ccz = INT32_MIN, cmaxY = -1, reachY = gRingMaxY;
+    const uint8_t* base = nullptr;
     for (int i = 0; i < SHADOW_MAX_STEPS; i++) {
         float t;
         int axis;
         if (tmx <= tmy && tmx <= tmz)      { t = tmx; tmx += tdx; vx += sx; axis = 0; }
         else if (tmy <= tmz)               { t = tmy; tmy += tdy; vy += sy; axis = 1; }
         else                               { t = tmz; tmz += tdz; vz += sz; axis = 2; }
-        if (vy >= WORLD_SY) return true;              // out of the world, into the sky
-        uint8_t id = w.getBlock(vx, vy, vz);
+        if (vy >= WORLD_SY || vy > reachY) return true;
+        const int cx = vx >> CHUNK_SHIFT, cz = vz >> CHUNK_SHIFT;
+        if (cx != ccx || cz != ccz) {
+            ccx = cx; ccz = cz;
+            int csx, csz;
+            base = w.chunkData(cx, cz, csx, csz);
+            if (base) { cmaxY = w.slotMaxY[csx][csz]; reachY = gReach[csx][csz]; }
+            else      { reachY = gRingMaxY; }
+            if (vy > reachY) return true;
+        }
+        if (!base || vy > cmaxY || vy < 0) continue;
+        uint8_t id = base[(vy * CHUNK_SIZE + (vz & CHUNK_MASK)) * CHUNK_SIZE + (vx & CHUNK_MASK)];
         if (id == BLOCK_AIR) continue;
 
         // Entered through the face the ray crossed: bottom face on a vertical
@@ -553,14 +589,20 @@ static bool sunVisible(const World& w, float px, float py, float pz,
     return true;
 }
 
+// The bake bookkeeping from here on runs once per face, not per ray or per
+// pixel: size matters more than speed in a .fal that lives in RAM.
+#pragma GCC push_options
+#pragma GCC optimize("Os")
+
 // Sun state of one face: 0 lit, 1 shadowed, 2 mixed (mask filled, bit u of
 // byte v set = that texel sees the sun). Five probe rays settle the uniform
 // cases; the other faces pay for all 64. Only the Quality level gets here.
-static int bakeFaceShadow(const World& w, int gx, int y, int gz, int quad, uint8_t* mask) {
+__attribute__((noinline)) static int bakeFaceShadow(const World& w, int gx, int y, int gz, int quad, uint8_t* mask) {
     if (!gQuadLit[quad]) return 1;
 
     const int (*t)[3] = quadTemplate(quad);
-    const float* n = gQuadNormal[quad];
+    float n[3];
+    quadNormal(quad, n);
     float base[3], du[3], dv[3];
     for (int k = 0; k < 3; k++) {
         const float org = (float)(k == 0 ? gx : (k == 1 ? y : gz));
@@ -579,61 +621,155 @@ static int bakeFaceShadow(const World& w, int gx, int y, int gz, int quad, uint8
     static const uint8_t kProbe[5][2] = {{0,0},{7,0},{0,7},{7,7},{4,4}};
     bool viaTex = false;
     int litProbes = 0;
+    uint8_t probeBits[8] = {0};   // probe results in mask layout, reused below
     for (int i = 0; i < 5; i++)
-        if (rayAt(kProbe[i][0], kProbe[i][1], viaTex)) litProbes++;
+        if (rayAt(kProbe[i][0], kProbe[i][1], viaTex)) {
+            litProbes++;
+            probeBits[kProbe[i][1]] |= (uint8_t)(1u << kProbe[i][0]);
+        }
     // All five agree and nothing see-through was crossed: the face is uniform.
     if ((litProbes == 0 || litProbes == 5) && !viaTex) return litProbes ? 0 : 1;
 
     for (int v = 0; v < 8; v++) {
-        uint8_t bits = 0;
+        const uint8_t probed = (v == 0 || v == 7) ? 0x81 : (v == 4 ? 0x10 : 0);
+        uint8_t bits = probeBits[v];
         for (int u = 0; u < 8; u++)
-            if (rayAt(u, v, viaTex)) bits |= (uint8_t)(1u << u);
+            if (!((probed >> u) & 1) && rayAt(u, v, viaTex)) bits |= (uint8_t)(1u << u);
         mask[v] = bits;
     }
     return 2;
 }
 
-// Sun state stored in one face word: 0 take the quad's own light, 1 none
-// (plain texture), 2 per-texel mask appended to `scratch`. Deliberately out of
-// line -- its caller is inlined at every emit site in the scan loop, and
-// inlining this with it costs about 4 KB in a .fal that runs from RAM.
+// Face word bits 27-28 hold the sun state; bit 29 marks a face that wanted a
+// per-texel mask and was refused one by the chunk budget.
+constexpr uint32_t FACE_KEY = 0x07FFFFFF;
+constexpr uint32_t FACE_NOMASK = 1u << 29;
+
+// The chunk's previous bake, walked in step with the new scan: both lists
+// are in scan order, so a face is found by advancing a cursor, never searched.
+struct BakeCarry {
+    const uint32_t* faces; size_t count;
+    const uint8_t* masks; size_t maskBytes;
+    size_t at, maskAt;          // cursor: next old face and its mask offset
+    World::DirtyBox box;        // cells changed since that bake
+};
+
+// Can a shadow ray leaving a face of voxel (gx,y,gz) cross a cell of `box`?
+// A ray starts within one block of its voxel and climbs 0.7885 blocks in x
+// and 0.287 in z per block of y; both bounds are rounded up.
+static bool rayCanReach(const World::DirtyBox& b, int gx, int y, int gz) {
+    if (b.x0 > b.x1) return true;
+    const int dyMax = b.y1 - y;
+    if (dyMax < -1 || b.x1 - gx < -1 || b.z1 - gz < -1) return false;
+    const int r = dyMax + 2;
+    return b.x0 - gx <= (r * 4 + 4) / 5 + 1 && b.z0 - gz <= (r * 3 + 9) / 10 + 1;
+}
+
+__attribute__((noinline)) static bool carryFace(BakeCarry& c, uint32_t key, int& state, const uint8_t*& mask) {
+    const uint32_t kv = key & 0x3FF;   // voxel: the scan order
+    while (c.at < c.count && (c.faces[c.at] & 0x3FF) < kv) {
+        if (((c.faces[c.at] >> 27) & 3) == 2) c.maskAt += 8;
+        c.at++;
+    }
+    size_t m = c.maskAt;
+    for (size_t i = c.at; i < c.count && (c.faces[i] & 0x3FF) == kv; i++) {
+        const uint32_t f = c.faces[i];
+        const int s = (f >> 27) & 3;
+        if ((f & FACE_KEY) == key && !(f & FACE_NOMASK)) {
+            if (s == 2) {
+                if (m + 8 > c.maskBytes) return false;
+                mask = c.masks + m;
+            }
+            state = s;
+            return true;
+        }
+        if (s == 2) m += 8;
+    }
+    return false;
+}
+
+// Sun bits of one face word (already shifted): state 0 take the quad's own
+// light, 1 none (plain texture), 2 per-texel mask appended to `scratch`. A
+// face whose rays cannot reach any changed cell keeps its previous bake.
+// Deliberately out of line -- its caller is inlined at every emit site in the
+// scan loop, and inlining this with it costs about 4 KB in a .fal that runs
+// from RAM.
 __attribute__((noinline)) static uint32_t faceSun(
-    const World& w, bool shaders, int gx, int y, int gz, int quad,
-    uint8_t* scratch, int& maskCount) {
-    if (!shaders) return 1;
+    const World& w, bool shaders, int gx, int y, int gz, uint32_t key,
+    uint8_t* scratch, int& maskCount, BakeCarry* carry) {
+    if (!shaders) return 1u << 27;
 
     uint8_t mask[8];
-    const int state = bakeFaceShadow(w, gx, y, gz, quad, mask);
-    if (state != 2) return (uint32_t)state;
+    const uint8_t* src = mask;
+    int state;
+    if (!(carry && !rayCanReach(carry->box, gx, y, gz) && carryFace(*carry, key, state, src)))
+        state = bakeFaceShadow(w, gx, y, gz, (key >> 10) & 31, mask);
+    if (state != 2) return (uint32_t)state << 27;
     if (maskCount < SHADOW_MASKS_PER_CHUNK) {
-        memcpy(scratch + maskCount*8, mask, 8);
+        memcpy(scratch + maskCount*8, src, 8);
         maskCount++;
-        return 2;
+        return 2u << 27;
     }
     // Out of budget: keep whichever uniform state covers most of the face.
     int litTexels = 0;
-    for (int i = 0; i < 8; i++) litTexels += __builtin_popcount(mask[i]);
-    return litTexels >= 32 ? 0 : 1;
+    for (int i = 0; i < 8; i++) litTexels += __builtin_popcount(src[i]);
+    return (litTexels >= 32 ? 0u : 1u << 27) | FACE_NOMASK;
 }
+
+__attribute__((noinline)) static void computeReach(const World& w) {
+    int m = -1;
+    for (int a = 0; a < WINDOW_CHUNKS; a++)
+        for (int b = 0; b < WINDOW_CHUNKS; b++)
+            if (w.slotCX[a][b] >= 0 && w.slotMaxY[a][b] > m) m = w.slotMaxY[a][b];
+    gRingMaxY = (int8_t)m;
+    for (int a = 0; a < WINDOW_CHUNKS; a++)
+        for (int b = 0; b < WINDOW_CHUNKS; b++) {
+            int r = m;
+            if (w.slotCX[a][b] >= 0) {
+                r = -1;
+                for (int c = 0; c < WINDOW_CHUNKS; c++)
+                    for (int d = 0; d < WINDOW_CHUNKS; d++)
+                        if (w.slotCX[c][d] >= w.slotCX[a][b] && w.slotCZ[c][d] >= w.slotCZ[a][b] &&
+                            w.slotMaxY[c][d] > r)
+                            r = w.slotMaxY[c][d];
+            }
+            gReach[a][b] = (int8_t)r;
+        }
+}
+#pragma GCC pop_options
 
 // Rebuild the packed face list for the chunk resident in window slot (sx,sz).
 // Two passes over the chunk's voxels up to its highest non-air layer: the
 // first only counts, so the list is allocated once at exactly its final size
 // (no push_back doubling, no high-water capacity kept between rebuilds). With
-// shaders on the second pass also bakes the sun state of every face it emits,
-// which is why it runs only when the chunk (or a chunk whose shadow reaches
-// it) changed, never per frame.
+// shaders on the second pass also settles the sun state of every face it
+// emits -- carried over from the previous bake of the same chunk when no ray
+// of the face can cross a changed cell, cast afresh otherwise -- which is why
+// it runs only when the chunk (or a chunk whose shadow reaches it) changed,
+// never per frame.
 void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
-    static uint8_t maskScratch[SHADOW_MASKS_PER_CHUNK * 8];
+    uint8_t maskScratch[SHADOW_MASKS_PER_CHUNK * 8];
 
     ChunkMesh& cm = chunkMesh[sx][sz];
     const int cx = w.slotCX[sx][sz], cz = w.slotCZ[sx][sz];
+    computeReach(w);
+
+    // Same chunk, same shader setting: the old bake stays until the new list
+    // is settled. Otherwise free it before counting so the peak is one list.
+    BakeCarry carry;
+    BakeCarry* carryPtr = nullptr;
+    if (shaders && cm.cx == cx && cm.cz == cz && !cm.faces.empty()) {
+        carry = {cm.faces.data(), cm.faces.size(), cm.masks.data(), cm.masks.size(),
+                 0, 0, w.slotBox[sx][sz]};
+        carryPtr = &carry;
+    } else {
+        cm.faces.clear();
+        cm.faces.shrink_to_fit();
+        cm.masks.clear();
+        cm.masks.shrink_to_fit();
+    }
+    w.slotBox[sx][sz] = {1, 0, 1, 0, 1, 0};   // consumed
     cm.cx = cx; cm.cz = cz; cm.gen = w.slotGen[sx][sz];
-    // Free the old lists before counting so the peak is one list, never two.
-    cm.faces.clear();
-    cm.faces.shrink_to_fit();
-    cm.masks.clear();
-    cm.masks.shrink_to_fit();
 
     const uint8_t (*B)[CHUNK_SIZE][CHUNK_SIZE] = w.slot[sx][sz];
     const int bx0 = cx << CHUNK_SHIFT, bz0 = cz << CHUNK_SHIFT;
@@ -645,11 +781,11 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
     const bool bake = shaders;
     auto emit = [&](int lx, int y, int lz, int quad, uint8_t tex, uint8_t set) {
         if (out) {
-            const uint32_t sun =
-                faceSun(w, bake, bx0 + lx, y, bz0 + lz, quad, maskScratch, maskCount);
-            out[count] = (uint32_t)lx | ((uint32_t)lz << 3) | ((uint32_t)y << 6) |
-                         ((uint32_t)quad << 10) | ((uint32_t)tex << 15) |
-                         ((uint32_t)set << 23) | (sun << 27);
+            const uint32_t key = (uint32_t)lx | ((uint32_t)lz << 3) | ((uint32_t)y << 6) |
+                                 ((uint32_t)quad << 10) | ((uint32_t)tex << 15) |
+                                 ((uint32_t)set << 23);
+            out[count] = key | faceSun(w, bake, bx0 + lx, y, bz0 + lz, key,
+                                       maskScratch, maskCount, carryPtr);
         }
         count++;
     };
@@ -667,9 +803,12 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
                     if (id == BLOCK_AIR) continue;
 
                     if (!blockIsFull(id)) {
-                        const NonFullMesh& nf = gNonFull[id];
-                        for (int i = 0; i < nf.count; i++)
-                            emit(lx, y, lz, nf.q[i].quad, nf.q[i].tex, nf.q[i].set);
+                        const uint8_t ni = gNonFullIdx[id & 0x1F];
+                        if (ni != 0xFF) {
+                            const NonFullMesh& nf = gNonFull[ni];
+                            for (int i = 0; i < nf.count; i++)
+                                emit(lx, y, lz, nf.q[i].quad, nf.q[i].tex, nf.q[i].set);
+                        }
                         continue;
                     }
 
@@ -697,11 +836,12 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
     };
 
     scan();                     // pass 1: count faces
-    cm.faces.resize(count);     // from zero capacity resize allocates exactly count
-    out = cm.faces.data();
+    std::vector<uint32_t> fresh(count);   // exactly count, no doubling
+    out = fresh.data();
     count = 0;
     scan();                     // pass 2: fill and bake; same input, same counts
-    if (maskCount) cm.masks.assign(maskScratch, maskScratch + (size_t)maskCount*8);
+    cm.faces.swap(fresh);
+    std::vector<uint8_t>(maskScratch, maskScratch + (size_t)maskCount*8).swap(cm.masks);
 }
 
 void Renderer::renderScene(const World& w) {
