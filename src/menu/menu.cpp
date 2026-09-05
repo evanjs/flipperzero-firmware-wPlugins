@@ -54,10 +54,6 @@ static const char* const MODE_LABELS[3] = {"Survival", "Hardmode", "Creative"};
 static const char* const ON_OFF[2] = {"Off", "On"};
 static const char* const DIST_LABELS[2] = {"Near", "Far"};
 
-// Shown by the widget's padlock popup, which shares the 112px box with the
-// warning dolphin -- keep the lines short enough not to run under it.
-constexpr const char* LOCK_MSG = "Mobs or\nshaders,\nnot both";
-
 enum ViewId : uint32_t {
     VIEW_MAIN = 0,
     VIEW_LIST,    // worlds / templates / world actions
@@ -98,6 +94,10 @@ struct MenuApp {
     ListMode list_mode = LIST_WORLDS;
     FormMode form_mode = FORM_CREATE;
     TextMode text_mode = TEXT_NAME;
+
+    // Rows the keyboard comes back to; only the creation form has them.
+    VariableItem* it_name = nullptr;
+    VariableItem* it_seed = nullptr;
     bool about_from_actions = false; // Back target for the text box
 
     Action result_action = Action::Quit;
@@ -377,20 +377,6 @@ uint8_t form_flags(const MenuApp* app) {
     return f;
 }
 
-// Mobs and shaders each cost the RAM the other one needs, so exactly one of
-// them may be on. Whichever is on locks the other row, which the widget then
-// draws with a padlock and explains on a keypress.
-void refresh_locks(MenuApp* app) {
-    const uint32_t mobs_row =
-        app->form_mode == FORM_CREATE ? (uint32_t)ROW_MOBS : (uint32_t)SROW_MOBS;
-    const uint32_t shaders_row =
-        app->form_mode == FORM_CREATE ? (uint32_t)ROW_SHADERS : (uint32_t)SROW_SHADERS;
-    VariableItem* mobs = variable_item_list_get(app->form, (uint8_t)mobs_row);
-    VariableItem* shaders = variable_item_list_get(app->form, (uint8_t)shaders_row);
-    if(mobs) variable_item_set_locked(mobs, app->shaders_idx != 0, LOCK_MSG);
-    if(shaders) variable_item_set_locked(shaders, app->mobs_idx != 0, LOCK_MSG);
-}
-
 void form_changed(VariableItem* item) {
     MenuApp* app = static_cast<MenuApp*>(variable_item_get_context(item));
     const uint8_t idx = variable_item_get_current_value_index(item);
@@ -426,7 +412,6 @@ void form_changed(VariableItem* item) {
         }
     }
     variable_item_set_current_value_text(item, ON_OFF[idx]);
-    refresh_locks(app);
 }
 
 void form_enter(void* context, uint32_t index);
@@ -439,11 +424,14 @@ void open_form(MenuApp* app, FormMode mode) {
     variable_item_list_reset(l);
     variable_item_list_set_enter_callback(l, form_enter, app);
 
+    app->it_name = nullptr;
+    app->it_seed = nullptr;
+
     VariableItem* it;
     if(mode == FORM_CREATE) {
-        it = variable_item_list_add(l, "Name", 1, nullptr, app);
+        it = app->it_name = variable_item_list_add(l, "Name", 1, nullptr, app);
         variable_item_set_current_value_text(it, app->name_buf);
-        it = variable_item_list_add(l, "Seed", 1, nullptr, app);
+        it = app->it_seed = variable_item_list_add(l, "Seed", 1, nullptr, app);
         variable_item_set_current_value_text(it, app->seed_text);
         it = variable_item_list_add(l, "Gamemode", 3, form_changed, app);
         variable_item_set_current_value_index(it, app->mode_idx);
@@ -479,7 +467,6 @@ void open_form(MenuApp* app, FormMode mode) {
     variable_item_list_add(l, "Exit", 1, nullptr, app);
 
     variable_item_list_set_selected_item(l, 0);
-    refresh_locks(app);
     switch_view(app, VIEW_FORM);
 }
 
@@ -549,7 +536,7 @@ void form_enter(void* context, uint32_t index) {
 // Back from the keyboard into the form: only the edited row is refreshed, the
 // rest of the form keeps whatever the player had already set.
 void return_to_form(MenuApp* app, uint32_t row) {
-    VariableItem* it = variable_item_list_get(app->form, (uint8_t)row);
+    VariableItem* it = row == ROW_NAME ? app->it_name : app->it_seed;
     if(it)
         variable_item_set_current_value_text(
             it, row == ROW_NAME ? app->name_buf : app->seed_text);
