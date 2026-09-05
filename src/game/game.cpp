@@ -257,8 +257,7 @@ Game::RayHit Game::rayCast(){
 
     float t=0, tBlock=(float)RAYCASTMAXLENGTH;
     while(t<=(float)RAYCASTMAXLENGTH){
-        if(by<0){h.id=-1;h.length=(int)t;h.bx=bx;h.by=by;h.bz=bz;tBlock=t;break;}
-        uint8_t id=world.getBlock(bx,by,bz);
+        int id=by<0?-1:world.getBlock(bx,by,bz);
         if(id!=BLOCK_AIR){h.id=id;h.length=(int)t;h.bx=bx;h.by=by;h.bz=bz;h.px=px;h.py=py;h.pz=pz;tBlock=t;break;}
         px=bx;py=by;pz=bz;
         if(tmx<=tmy && tmx<=tmz){ t=tmx; tmx+=tdx; bx+=sx; }
