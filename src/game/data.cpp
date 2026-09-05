@@ -121,7 +121,8 @@ static void initMesh() {
     g_blockMesh[BLOCK_SAND] = makeCube(TEX_DIRT,0b1010,TEX_DIRT,0b1010,TEX_DIRT,0b1010,true,TEX_DIRT,0b1010);
     g_itemMesh[BLOCK_SAND]  = g_blockMesh[BLOCK_SAND];
 
-    g_blockMesh[BLOCK_GLASS] = makeCube(TEX_GLASS,0b1100,TEX_GLASS,0b1100,TEX_GLASS,0b1100,false);
+    // frame inverts what is behind it (TS_OVERLAY) instead of painting ink
+    g_blockMesh[BLOCK_GLASS] = makeCube(TEX_GLASS,0b1101,TEX_GLASS,0b1101,TEX_GLASS,0b1101,false);
 
     { MeshEntry e; e.exists = true;
       setTextures(e, {{TEX_SAPLINGLIGHT,0b0100},{TEX_SAPLINGDARK,0b0110}});

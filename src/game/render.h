@@ -31,12 +31,11 @@ public:
     int yawIndex = 0, pitchIndex = 0;
     Texture texture = TEX_EMPTY;
     struct { bool cullBackface=true, transparent=false, inverted=false, overlay=false; } settings;
-    // Sunlight of the quad being rasterized: 0 none (draw the plain texture),
-    // 1 grazing, 2 direct. Lit texels get a dither punched out of their ink,
-    // so a lit surface reads brighter than the same surface in shadow. Always
-    // 0 while shaders are off, which is the pre-shader look bit for bit.
-    uint8_t litLevel = 0;
-    const uint8_t* litMask = nullptr;   // null: the whole quad shares litLevel
+    // Shadows draw as outlines: litMask (bit set = lit texel) marks the faces
+    // the shadow edge cuts through, null means no edge on this quad. Null
+    // everywhere while shaders are off, which is the pre-shader look bit for bit.
+    uint8_t litLevel = 0;               // unused, kept for the quad state layout
+    const uint8_t* litMask = nullptr;
 
     int winX0 = 0, winX1 = WORLD_SX - 1, winZ0 = 0, winZ1 = WORLD_SZ - 1;
 
@@ -83,7 +82,7 @@ private:
                    const uint8_t tex[6],int texSettings,uint8_t headDir);
     Vertex worldToCam(const Vertex& v) const;
     Vertex camToScreen(const Vertex& v) const;
-    void drawQuadCam(Vertex q[4]);
+    __attribute__((noclone)) void drawQuadCam(Vertex q[4]);   // O3 cloned it per caller, +684 B
     void renderQuad(float x,float y,float z,int quadId,uint8_t texId,int texSettings);
     void drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings,
                        uint8_t lit,const uint8_t* mask);

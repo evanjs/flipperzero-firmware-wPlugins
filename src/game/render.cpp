@@ -202,12 +202,21 @@ void Renderer::rasterTri(const Vertex& A,const Vertex& B,const Vertex& C) {
     const bool skipZero   = settings.transparent;
     const uint8_t invMask = settings.inverted ? 1 : 0;
     const bool useOverlay = settings.overlay;
-    // On a transparent texture the surviving ink IS the object -- a glass
-    // frame, a sapling cross -- not a shaded surface, so the lit dither would
-    // punch half of it away and the block would vanish into the ground behind
-    // it. Those quads keep their plain texture at every shader level.
-    const uint8_t lit     = settings.transparent ? 0 : litLevel;
-    const uint8_t* lmask  = litMask;
+    // Shadows are drawn as their outline only: on a face the shadow edge
+    // cuts through, the shadowed texels that touch a lit one flip. The
+    // texture itself is never modulated, in light or in shade. A transparent
+    // texture (glass frame, sapling cross) is the object, never shaded.
+    uint8_t edge[8];
+    const bool outline = litMask && !settings.transparent;
+    if (outline) {
+#pragma GCC unroll 1
+        for (int r = 0; r < 8; r++) {
+            const uint8_t m = litMask[r];
+            const uint8_t near = (uint8_t)((m << 1) | (m >> 1) | (r ? litMask[r-1] : 0) |
+                                           (r < 7 ? litMask[r+1] : 0));
+            edge[r] = (uint8_t)(~m & near);
+        }
+    }
 
     const float e0dx = B.y-C.y, e0dy = C.x-B.x, e0c = B.x*C.y - B.y*C.x;
     const float e1dx = C.y-A.y, e1dy = A.x-C.x, e1c = C.x*A.y - C.y*A.x;
@@ -276,10 +285,7 @@ void Renderer::rasterTri(const Vertex& A,const Vertex& B,const Vertex& C) {
 
             if (skipZero && color==0) continue;
             color ^= invMask;
-            // Sunlit texels lose ink to a dither, so a lit face reads brighter
-            // than the same face in shadow: 50% for direct light, 25% grazing.
-            if (lit && (!lmask || ((lmask[b] >> a) & 1)))
-                color &= (uint8_t)(lit == 2 ? ((x ^ y) & 1) : ((x | y) & 1));
+            if (outline && ((edge[b] >> a) & 1)) color ^= 1;
             if (useOverlay) color ^= row[x] & 1;
             row[x] = (uint8_t)((depth << 1) | color);
         }
@@ -442,9 +448,7 @@ void Renderer::renderBox(float x0,float y0,float z0,float x1,float y1,float z1,
             cam[i] = worldToCam(w);
         }
         texture = (Texture)tex[f];
-        // The box is not in the voxel grid, so it gets no shadow rays: light
-        // it from the face normal alone (kCorner faces match QUAD_FULL_*).
-        litLevel = shaders ? gQuadLit[f] : 0;
+        litLevel = 0;
         drawQuadCam(cam);
     }
 }
@@ -497,9 +501,7 @@ void Renderer::renderMob(float x,float y,float z,uint8_t species,uint8_t yaw,uin
             }
             texture = (Texture)((f==3 && (bx.flags&1)) ? s.texFront :
                                 f>=4 ? s.texTop : s.texSide);
-            // A creature turns, so its side faces do not keep a fixed normal;
-            // only the flat top is lit, which still separates it from the ground.
-            litLevel = (shaders && f >= 4) ? gQuadLit[f] : 0;
+            litLevel = 0;
             drawQuadCam(cam);
         }
     }
@@ -697,7 +699,7 @@ __attribute__((noinline)) static bool carryFace(BakeCarry& c, uint32_t key, int&
 __attribute__((noinline)) static uint32_t faceSun(
     const World& w, bool shaders, int gx, int y, int gz, uint32_t key,
     uint8_t* scratch, int& maskCount, BakeCarry* carry) {
-    if (!shaders) return 1u << 27;
+    if (!shaders) return 0;   // lit: the plain texture
 
     uint8_t mask[8];
     const uint8_t* src = mask;
@@ -870,6 +872,9 @@ void Renderer::renderScene(const World& w) {
     int budget = shaders ? REBUILDS_PER_FRAME : WINDOW_CHUNKS * WINDOW_CHUNKS;
     meshPending = false;
 
+    // Overlay faces (glass frames) invert what is behind them, so they go in
+    // a second pass after every opaque face of every chunk.
+    for (int pass = 0; pass < 2; pass++)
     for (int sz = 0; sz < WINDOW_CHUNKS; sz++)
         for (int sx = 0; sx < WINDOW_CHUNKS; sx++) {
             ChunkMesh& cm = chunkMesh[sx][sz];
@@ -913,6 +918,7 @@ void Renderer::renderScene(const World& w) {
                     if (maskAt + 8 <= cm.masks.size()) mask = cm.masks.data() + maskAt;
                     maskAt += 8;
                 }
+                if ((int)((f >> 23) & TS_OVERLAY) != pass) continue;
                 const int gx = bx0 + (f & 7), gz = bz0 + ((f >> 3) & 7);
                 if (clip && (gx < winX0 || gx > winX1 || gz < winZ0 || gz > winZ1))
                     continue;
@@ -925,7 +931,7 @@ void Renderer::renderScene(const World& w) {
                     if (fc.neg ? cam >= plane : cam <= plane) continue;
                 }
                 drawBlockQuad(gx, y, gz, quad, (uint8_t)((f >> 15) & 0xFF), (f >> 23) & 0xF,
-                              sun == 1 ? 0 : gQuadLit[quad], mask);
+                              0, mask);
             }
         }
 }
