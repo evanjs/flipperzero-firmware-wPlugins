@@ -6,7 +6,7 @@ Flipcraft is an independent project by ApertureFox Technology. It is written fro
 
 ## Worlds
 
-Every world grows from a text seed in four sizes, from 128x128 up to 1024x1024 blocks: forests, deserts, ravines, ore veins and one house with a stocked chest somewhere on the map. The same seed produces the same terrain at any size. The world, your inventory, health and the contents of every chest and furnace are saved on the SD card as a single `.fcw` file, and any number of worlds can be created, renamed, inspected and deleted from the menu.
+Every world grows from a text seed in four sizes, from 128x128 up to 1024x1024 blocks: forests, deserts, ravines, ore veins and one house with a stocked chest somewhere on the map. The same seed produces the same terrain at any size. The world, your inventory, health and the contents of every chest and furnace are saved on the SD card as a single .fcw file, and any number of worlds can be created, renamed, inspected and deleted from the menu.
 
 Each world carries its own settings, chosen at creation and editable later:
 
