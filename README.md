@@ -174,10 +174,10 @@ The manual way is the firmware's build tool. Put the repository in
 Either way the `.fap` embeds the three plugins and unpacks them to
 `/ext/apps_assets/flipcraft/plugins/` on first launch.
 
-`tools/` holds host-side helpers: `hostgen.cpp` generates a world on a PC
+~~`tools/` holds host-side helpers: `hostgen.cpp` generates a world on a PC
 with the same code the device uses, `mapview.py` renders a `.fcw` as an
 image, and `keyart.py` draws the store key art from a scene the engine could
-produce.
+produce.~~
 
 ## Donation
 
