@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #include "menu.h"
 #include "../plugin_api.h"
 

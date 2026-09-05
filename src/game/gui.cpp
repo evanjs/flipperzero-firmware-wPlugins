@@ -1,4 +1,4 @@
-
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #include "gui.h"
 
 namespace flipcraft {

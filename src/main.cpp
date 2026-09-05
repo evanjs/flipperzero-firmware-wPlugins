@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 //
 // Host bridge: the only permanently resident piece of the app. Alternates
 // between the menu plugin and the game plugin, so at any moment RAM holds the

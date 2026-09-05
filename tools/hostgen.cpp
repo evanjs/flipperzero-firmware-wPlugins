@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 //   c++ -std=c++17 -O2 -o /tmp/hostgen tools/hostgen.cpp
 //   /tmp/hostgen out.fcw 16 12345 0    # chunks per side: 16/32/64/128, then
 //                                      # the header flags byte (plugin_api.h)

@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #pragma once
 //
 // Contract between the tiny host FAP and the three loadable halves of the app.

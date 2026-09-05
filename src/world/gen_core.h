@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #pragma once
 //
 // Flipcraft world generator core (from tools/worldgen.py). Self-contained

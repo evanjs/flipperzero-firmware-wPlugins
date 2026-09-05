@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #include "../flipcraft.h"
 #include <initializer_list>
 

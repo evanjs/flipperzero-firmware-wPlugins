@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 //
 // World generator .fal plugin: a thin furi/storage wrapper around gen_core.h.
 // Mapped into RAM by the host only while a world is being generated.

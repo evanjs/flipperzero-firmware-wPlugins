@@ -1,4 +1,4 @@
-
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #pragma GCC optimize("O3")
 
 #include "render.h"

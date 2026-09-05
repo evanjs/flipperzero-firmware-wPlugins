@@ -1,5 +1,4 @@
-
-
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #pragma once
 #include "../flipcraft.h"
 
