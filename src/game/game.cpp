@@ -238,7 +238,9 @@ void Game::saveInventory(){
 // the first solid block wins the hit (h.mob >= 0).
 Game::RayHit Game::rayCast(){
     RayHit h{0,0,0,0,0,0,BLOCK_AIR,-1,-1};
-    const float ox=playerX+PLAYERHALFWIDTH, oy=playerY+PLAYERCAMHEIGHT, oz=playerZ+PLAYERHALFWIDTH;
+    // the eye of the frame the player is looking at (crouch + head bob included),
+    // so the ray is exactly the pixel under the crosshair
+    const float ox=renderer.camPos[0], oy=renderer.camPos[1], oz=renderer.camPos[2];
     const float dx=renderer.matrix[2][0], dy=renderer.matrix[2][1], dz=renderer.matrix[2][2];
 
     int bx=ifloor(ox*(1.0f/16.0f)), by=ifloor(oy*(1.0f/16.0f)), bz=ifloor(oz*(1.0f/16.0f));
@@ -264,10 +266,9 @@ Game::RayHit Game::rayCast(){
         else                    { t=tmz; tmz+=tdz; bz+=sz; }
     }
 
-    // Generous pick: a creature counts as aimed at when its centre projects
-    // into the middle half of the screen (|sx-64|<=32 -> 7|camX| <= 4*camZ)
-    // and no wall is closer along the view axis. Nearest such body wins.
-    float bestW=tBlock*16.0f;
+    // A creature is aimed at when its projected body reaches into the AIM_RADIUS
+    // circle around the crosshair and no wall stands in front of it. Nearest wins.
+    float bestW=tBlock;
     ActiveWindow win=activeWindowAround((playerX+PLAYERHALFWIDTH)/BLOCKSIZE,
                                         (playerZ+PLAYERHALFWIDTH)/BLOCKSIZE,
                                         world.worldSX(), world.worldSZ());
@@ -280,10 +281,15 @@ Game::RayHit Game::rayCast(){
         const float hgt=(float)((mobSpec(m.species).geom>>4)<<1);
         float rx=m.x+7-ox, ry=m.y+hgt*0.5f-oy, rz=m.z+7-oz;
         float cz=M[2][0]*rx+M[2][1]*ry+M[2][2]*rz;
-        if(cz<(float)CLIP || cz>=bestW) continue;
+        if(cz<(float)CLIP || cz-(float)(MOBWIDTH/2)>=bestW) continue;   // body front, not centre
         float cx=M[0][0]*rx+M[0][2]*rz;
         float cy=M[1][0]*rx+M[1][1]*ry+M[1][2]*rz;
-        if(7.0f*fabsf(cx)>4.0f*cz || 7.0f*fabsf(cy)>4.0f*cz) continue;
+        const float s=(float)LENS/cz;                      // world units -> pixels at this depth
+        float ex=fabsf(cx)*s-(float)(MOBWIDTH/2)*s;        // gap from the crosshair to the body box
+        float ey=fabsf(cy)*s-hgt*0.5f*s;
+        if(ex<0.0f)ex=0.0f;
+        if(ey<0.0f)ey=0.0f;
+        if(ex*ex+ey*ey>(float)(AIM_RADIUS*AIM_RADIUS)) continue;
         h.mob=i; bestW=cz;
     }
     return h;
@@ -644,6 +650,13 @@ void Game::respawn(){
     world.updateWindow((playerX+PLAYERHALFWIDTH)/BLOCKSIZE,(playerZ+PLAYERHALFWIDTH)/BLOCKSIZE,true);
 }
 
+// centre plus, inverted against whatever the world drew under it
+void Game::drawCrosshair(){
+    screen.invertRect(CROSSHAIR_X-CROSSHAIR_ARM,CROSSHAIR_Y,CROSSHAIR_X+CROSSHAIR_ARM,CROSSHAIR_Y);
+    screen.invertRect(CROSSHAIR_X,CROSSHAIR_Y-CROSSHAIR_ARM,CROSSHAIR_X,CROSSHAIR_Y-1);
+    screen.invertRect(CROSSHAIR_X,CROSSHAIR_Y+1,CROSSHAIR_X,CROSSHAIR_Y+CROSSHAIR_ARM);
+}
+
 void Game::drawHotbar(){
     screen.x1=35;screen.y1=51;screen.x2=92;screen.y2=63;screen.clearRect();
     screen.x1=36;screen.y1=52;screen.x2=91;screen.y2=63;screen.drawRect();
@@ -692,6 +705,7 @@ void Game::finishRender(){
     renderWorld();
     RayHit hit=rayCast();
     if(hit.mob<0&&hit.id!=BLOCK_AIR&&hit.id!=-1&&hit.length>=0) renderer.renderOverlay(world,hit.bx,hit.by,hit.bz,0);
+    drawCrosshair();
     drawHotbar();
 }
 

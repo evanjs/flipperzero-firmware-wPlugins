@@ -138,6 +138,7 @@ private:
     void respawn();
     void renderWorld();
     void finishRender();
+    void drawCrosshair();
     void drawHotbar();
     int  findBlockEntity(int x,int y,int z);
 

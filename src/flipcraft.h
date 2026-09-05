@@ -210,6 +210,12 @@ constexpr int SCREEN_HEIGHT = 64;
 constexpr int LENS          = 56;
 constexpr int CLIP          = 3;
 
+// camToScreen sends the view axis exactly here, so the crosshair marks the ray
+constexpr int CROSSHAIR_X   = SCREEN_WIDTH / 2;                         // 64
+constexpr int CROSSHAIR_Y   = (SCREEN_HEIGHT - 1) - SCREEN_HEIGHT / 2;  // 31
+constexpr int CROSSHAIR_ARM = 3;
+constexpr int AIM_RADIUS    = 6;   // px around the crosshair that still hits a mob
+
 constexpr float BOB_SPEED        = 0.35f;
 constexpr float BOB_EASE         = 0.20f;
 constexpr float CAM_BOB_AMPLITUDE= 1.3f;
