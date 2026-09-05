@@ -418,6 +418,7 @@ void Game::handleBreakAndPlace(const Input& in){
 }
 
 bool Game::boxCollides(int x,int y,int z,int w,int h){
+    if(y<0)return true;
     for(int bx=x/16;bx<=(x+w)/16;bx++)
     for(int by=y/16;by<=(y+h)/16;by++)
     for(int bz=z/16;bz<=(z+w)/16;bz++)
@@ -478,7 +479,7 @@ void Game::moveAndCollide(int dx,int dy,int dz){
         while(playerCollides(x,ny,z)&&ny>=0&&ny<=WORLD_SY*BLOCKSIZE) ny+=step;
         y=ny;
     } else y=ny;
-    if(y<0){y=0;pl.onGround=true;velYsub=0;posYsub=0;}
+    if(y<0)y=0;
 
     playerX=x;playerY=y;playerZ=z;
 }
