@@ -231,9 +231,20 @@ TABLES = (
 # them in would make that comment's number stop meaning what it says. Sliced by
 # NAME rather than by index so appending a table cannot silently join this subset
 # the way TABLES[3:] would have.
-VENDOR_TABLES = tuple(t for t in TABLES if t[0] in (
-    "Ubicquia", "Motorola", "Verkada", "Genetec", "Avigilon", "Utility",
-    "DigitalAlly"))
+VENDOR_TABLES = tuple(
+    t
+    for t in TABLES
+    if t[0]
+    in (
+        "Ubicquia",
+        "Motorola",
+        "Verkada",
+        "Genetec",
+        "Avigilon",
+        "Utility",
+        "DigitalAlly",
+    )
+)
 
 VENDOR_TOTAL_CLAIMS = {
     APP: re.compile(r"VENDOR-EXCLUSIVE OUIs\s*\((\d+)\s+across\s+(\d+)\s+vendors\)"),
@@ -342,7 +353,9 @@ def check_version_parity():
         print("  MISS version: no FLOCK_COMPANION_VERSION in flock_companion.ino")
         return False
     if m_app.group(1) != m_esp.group(1):
-        print(f"  DRIFT version: app says {m_app.group(1)}, companion says {m_esp.group(1)}")
+        print(
+            f"  DRIFT version: app says {m_app.group(1)}, companion says {m_esp.group(1)}"
+        )
         print("        They ship as a pair. Bump both in the same commit.")
         return False
     print(f"  OK   version: app and companion both {m_app.group(1)}")
@@ -385,13 +398,13 @@ def main():
     ok &= mis_ok
 
     print()
-    print('Shared chip-vendor / shared-block prefixes (never evidence on their own)')
+    print("Shared chip-vendor / shared-block prefixes (never evidence on their own)")
     gen_ok = True
     for label, app_sym, esp_sym in TABLES:
         gen_ok &= check_too_generic(label, APP, app_sym)
         gen_ok &= check_too_generic(label, ESP, esp_sym)
     if gen_ok:
-        print(f'  OK   none of the {len(TOO_GENERIC)} too-generic prefixes are present')
+        print(f"  OK   none of the {len(TOO_GENERIC)} too-generic prefixes are present")
     ok &= gen_ok
 
     print()
