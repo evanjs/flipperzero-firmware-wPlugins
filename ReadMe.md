@@ -113,6 +113,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [FlipDeFlock v0.91 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - Updated: [Rush Hour v0.1.7 (By Endika)](https://github.com/Endika/flipper-tutu)
 - Updated: [Habit Flow v0.1.3 (By Endika)](https://github.com/Endika/flipper-habit-flow)
+- Updated: [Sub Duplicate Finder v1.2.2 (By Endika)](https://github.com/Endika/flipper-sub-dup)
 
 <a name="release"></a>
 
@@ -896,7 +897,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Stopwatch v1.0 (By bergr22)](https://github.com/bergr22/Stopwatch-Flipper)
 - [StroboMeter v1.1 (By LeanderJDev)](https://github.com/LeanderJDev/FlipperStroboMeterApp)
 - [Sub Analyzer v1.0 (By RocketGod)](https://github.com/RocketGod-git/Flipper-Zero-SUB-Analyzer)
-- [Sub Duplicate Finder v1.2.1 (By Endika)](https://github.com/Endika/flipper-sub-dup)
+- [Sub Duplicate Finder v1.2.2 (By Endika)](https://github.com/Endika/flipper-sub-dup)
 - [Sub-GHz Bruteforcer v4.0 (By Ganapati/xMasterX/derskythe)](https://github.com/derskythe/flipperzero-subbrute/tree/master)
 - [Sub-GHz Jammer Detect v1.0 (By barkandbite)](https://github.com/barkandbite/flipper_suite)
 - [Sub-GHz Keystore Decryptor v1.1 (By Lechnio)](https://github.com/Lechnio/KeeLoq-Keystore-Decryptor)
