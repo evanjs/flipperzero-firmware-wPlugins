@@ -830,8 +830,7 @@ void recon_app_ble_add(
         // does exactly this), so whichever advert happens to land first must not
         // get to name the device permanently.
         if(name && name[0]) {
-            bool upgrade =
-                e->name[0] != '\0' && flock_ble_name_should_replace(e->name, name);
+            bool upgrade = e->name[0] != '\0' && flock_ble_name_should_replace(e->name, name);
             if(e->name[0] == '\0' || upgrade) {
                 strncpy(e->name, name, RECON_SSID_LEN - 1);
                 e->name[RECON_SSID_LEN - 1] = '\0';
@@ -1215,8 +1214,7 @@ void recon_hits_save(ReconApp* app) {
 void recon_survey_tick(ReconApp* app) {
     if(!app->esp) return; // no link, nothing to ask
     uint32_t now = furi_get_tick();
-    if(app->survey_last_poll != 0 &&
-       (now - app->survey_last_poll) < RECON_SURVEY_POLL_MS) {
+    if(app->survey_last_poll != 0 && (now - app->survey_last_poll) < RECON_SURVEY_POLL_MS) {
         return;
     }
     app->survey_last_poll = now;

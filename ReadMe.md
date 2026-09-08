@@ -112,6 +112,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [TagTinker v2.1 (By i12bp8)](https://github.com/i12bp8/TagTinker)
 - Updated: [FlipDeFlock v0.91 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - Updated: [Rush Hour v0.1.7 (By Endika)](https://github.com/Endika/flipper-tutu)
+- Updated: [Habit Flow v0.1.3 (By Endika)](https://github.com/Endika/flipper-habit-flow)
 
 <a name="release"></a>
 

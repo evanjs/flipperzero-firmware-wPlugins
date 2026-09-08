@@ -239,8 +239,8 @@ bool flock_store_parse_line(const char* line, FlockStoreRec* out) {
     if(*p != '\0') return false; // more columns than the schema allows
     // Exactly a v2 line, or exactly a v1 line (v2 minus the trailing class).
     // Any other count is a malformed record, not a version we tolerate.
-    if(ncols != FLOCK_STORE_COLS && ncols != FLOCK_STORE_COLS_V3 &&
-       ncols != FLOCK_STORE_COLS_V2 && ncols != FLOCK_STORE_COLS_V1)
+    if(ncols != FLOCK_STORE_COLS && ncols != FLOCK_STORE_COLS_V3 && ncols != FLOCK_STORE_COLS_V2 &&
+       ncols != FLOCK_STORE_COLS_V1)
         return false;
 
     if(!fs_parse_mac(f[0], r.mac)) return false;
@@ -294,8 +294,7 @@ bool flock_store_parse_line(const char* line, FlockStoreRec* out) {
     // v2 only. A v1 line stops at 13 columns and keeps the memset defaults of 0
     // -- FlockClassAlpr and hidden-never-observed, which is what every v1
     // detection actually was.
-    if(ncols == FLOCK_STORE_COLS || ncols == FLOCK_STORE_COLS_V3 ||
-       ncols == FLOCK_STORE_COLS_V2) {
+    if(ncols == FLOCK_STORE_COLS || ncols == FLOCK_STORE_COLS_V3 || ncols == FLOCK_STORE_COLS_V2) {
         if(!fs_parse_u32(f[13], &u) || u > FLOCK_STORE_MAX_DEV_CLASS) return false;
         r.dev_class = (uint8_t)u;
         if(!fs_parse_u32(f[14], &u) || u > 1) return false;

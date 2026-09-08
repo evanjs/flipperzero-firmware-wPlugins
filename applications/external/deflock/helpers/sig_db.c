@@ -308,7 +308,8 @@ static void sig_db_destroy(SigDb* db) {
 /** Parse one line as an 8-hex fingerprint. Returns 0 for blank/comment/bad. */
 static uint32_t sig_learned_parse_line(const char* line, size_t len) {
     size_t i = 0;
-    while(i < len && (line[i] == ' ' || line[i] == '\t')) i++;
+    while(i < len && (line[i] == ' ' || line[i] == '\t'))
+        i++;
     if(i >= len || line[i] == '#') return 0;
     uint32_t v = 0;
     size_t digits = 0;
@@ -461,7 +462,8 @@ static void sig_merge_learned(SigDb* db, Storage* storage) {
     uint32_t* merged = malloc(sizeof(uint32_t) * SIG_MAX_IE_FPS);
     if(!merged) return; // fail-safe: keep whatever the JSON gave us
     size_t n = 0;
-    for(size_t i = 0; i < have && n < SIG_MAX_IE_FPS; i++) merged[n++] = db->ie_fps[i];
+    for(size_t i = 0; i < have && n < SIG_MAX_IE_FPS; i++)
+        merged[n++] = db->ie_fps[i];
     for(size_t i = 0; i < ln && n < SIG_MAX_IE_FPS; i++) {
         bool dup = false;
         for(size_t k = 0; k < n; k++) {
