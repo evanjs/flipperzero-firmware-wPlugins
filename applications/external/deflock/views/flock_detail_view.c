@@ -2,7 +2,9 @@
 // Copyright (c) 2026 ReconGrunt
 #include "flock_detail_view.h"
 #include "../recon_app_i.h"
+#include "../helpers/open_drone_id.h"
 #include "../helpers/report_fmt.h"
+#include "../helpers/flock_ble.h" // FlockBleTell / flock_ble_tell_str
 #include "ui_widgets.h"
 
 #include <gui/elements.h>
@@ -63,6 +65,9 @@ typedef enum {
     FdSaved, /**< archived entries only */
     FdHidden, /**< hidden-SSID beaconing observed */
     FdIeFp, /**< a probe IE-fingerprint was captured */
+    FdUaType, /**< aircraft type, from a Remote ID Basic ID message */
+    FdOpLat, /**< OPERATOR latitude -- the pilot, not the aircraft */
+    FdOpLon,
     FdKindCount,
 } FdLineKind;
 
@@ -117,6 +122,20 @@ static bool fd_format(char* buf, size_t len, FdLineKind kind, const FlockEntry* 
         // possible hit?"). Re-derived from stored evidence, never asserted by
         // the companion, so it cannot inherit an over-claim from older firmware.
         FlockMethod m = flock_method_of(e->mac, e->ssid, e->ftype, e->ie_fp);
+        // A BLE hit knows WHICH tell fired, and they are not equally strong: the
+        // 0x09C8 manufacturer id belongs to the battery vendor XUNTONG, while the
+        // Raven GATT service is Flock's own. Both reach Confirmed, so the rung
+        // alone cannot separate them -- name the evidence instead.
+        //
+        // ONLY refines the generic FlockMethodBle case. flock_method_of() tests
+        // the OUI tables BEFORE ftype, so a BLE hit on a Flock-OUI address
+        // already reads "Method: OUI" today; overriding that here would quietly
+        // change text this row has always shown. Rows restored from the card
+        // carry no tell and fall back to the same string as before.
+        if(m == FlockMethodBle && e->ble_tell != FlockBleTellNone) {
+            snprintf(buf, len, "Method: %s", flock_ble_tell_str((FlockBleTell)e->ble_tell));
+            return false;
+        }
         if(m == FlockMethodBle || m == FlockMethodUnknown) {
             // "BLE mfg ID + BLE advert" says the same thing twice, and an
             // "ESP probe rule" verdict is already about how it was seen -- both
@@ -142,7 +161,13 @@ static bool fd_format(char* buf, size_t len, FdLineKind kind, const FlockEntry* 
         snprintf(
             buf,
             len,
-            "SSID: %s",
+            // A probe REQUEST carries the network the device is LOOKING FOR,
+            // not its own name. Labelling both "SSID:" made a phone hunting for
+            // its home wifi read as a camera called "NETGEAR19", which is how a
+            // real drive's list got misread. Cameras send WILDCARD probes with no
+            // name at all, so a named probe target argues against this being one.
+            "%s: %s",
+            (e->ftype == 'P' && e->ssid[0]) ? "Seeking" : "SSID",
             e->ssid[0] ? e->ssid : (e->hidden ? "(withheld by AP)" : "(none seen)"));
         return false;
     case FdRssi:
@@ -192,6 +217,19 @@ static bool fd_format(char* buf, size_t len, FdLineKind kind, const FlockEntry* 
         // A confirmed unit's fp can be dropped into signatures.json ("ie_fps") to
         // catch its MAC-randomized twins.
         snprintf(buf, len, "IE-fp: %08lx", (unsigned long)e->ie_fp);
+        return false;
+    case FdUaType:
+        snprintf(buf, len, "Type: %s", odid_ua_type_str(e->ua_type));
+        return false;
+    case FdOpLat:
+        // THE OPERATOR, NOT THE AIRCRAFT, and the label has to say so on its own
+        // -- these rows sit directly under Lat/Lon, which are the drone's
+        // position, and the two are typically a kilometre apart. A row reading
+        // just "Lat:" twice would be read as a redraw glitch, and acted on.
+        snprintf(buf, len, "Pilot lat: %.5f", (double)e->op_lat);
+        return false;
+    case FdOpLon:
+        snprintf(buf, len, "Pilot lon: %.5f", (double)e->op_lon);
         return false;
     default:
         buf[0] = '\0';
@@ -255,6 +293,17 @@ static void flock_detail_view_draw_callback(Canvas* canvas, void* _model) {
     }
     // Where a stored hit came from, in wall-clock terms. Only meaningful for an
     // archived entry: a live one's seen_epoch is "moments ago" by definition.
+    // Remote ID rows. Only an aircraft has them, and only once the relevant
+    // message type has actually arrived -- an aircraft cycles message types, so
+    // the operator position turns up seconds after the serial and these rows
+    // appear when it does.
+    if(e.dev_class == (uint8_t)FlockClassDrone) {
+        kinds[n++] = FdUaType;
+        if(!isnan(e.op_lat) && !isnan(e.op_lon)) {
+            kinds[n++] = FdOpLat;
+            kinds[n++] = FdOpLon;
+        }
+    }
     if(e.archived && e.seen_epoch) kinds[n++] = FdSaved;
     if(e.hidden) kinds[n++] = FdHidden;
     if(e.ie_fp != 0) kinds[n++] = FdIeFp;

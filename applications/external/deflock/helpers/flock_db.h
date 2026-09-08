@@ -55,6 +55,16 @@ typedef enum {
                       *  sells both ALPR poles and hand-held radios on one OUI, so
                       *  calling either "ALPR" would invent a detection. The VENDOR
                       *  is what we actually know; the kind is not. */
+    FlockClassDrone, /**< Unmanned aircraft, identified by its ASTM F3411 Remote
+                       *  ID broadcast or by a drone-manufacturer OUI.
+                       *
+                       *  ITS OWN CLASS, not folded into ALPR or Gear. A drone is
+                       *  the one thing here that MOVES and FOLLOWS, so the
+                       *  operator response to it is different from anything else
+                       *  the app reports -- and a Remote ID broadcast tells us
+                       *  where the pilot is standing, which no other class has an
+                       *  equivalent of. Calling it a camera would also be an
+                       *  over-claim: plenty of aircraft carry no camera at all. */
 } FlockDevClass;
 
 /**
@@ -89,6 +99,21 @@ typedef enum {
     FlockVendorVerkada, /**< Verkada. */
     FlockVendorGenetec, /**< Genetec (AutoVu). */
     FlockVendorAvigilon, /**< Avigilon Alta (Motorola-owned). */
+    FlockVendorUtility, /**< Utility, Inc -- BodyWorn body-worn cameras. */
+    FlockVendorDigitalAlly, /**< Digital Ally -- FirstVU body-worn cameras. */
+    /**
+     * A drone manufacturer, named by the OUI vendor lookup rather than by this
+     * enum.
+     *
+     * ONE VALUE FOR ALL OF THEM, deliberately. The useful identification of an
+     * aircraft is its Remote ID broadcast -- which carries the operator's own
+     * serial or registration and needs no vendor guess -- and the OUI table here
+     * is only a fallback for aircraft whose Remote ID we did not catch. Spending
+     * an enum value per manufacturer would imply the vendor is the answer; it is
+     * not, and for the three US police-drone vendors that hold no IEEE block at
+     * all (BRINC, Aerodome, Paladin) a vendor enum could never say anything.
+     */
+    FlockVendorDrone,
 } FlockVendor;
 
 /**
@@ -181,24 +206,34 @@ bool vendor_exclusive_oui_match(const uint8_t* mac);
 /** Source of an IE-fingerprint match, so a caller can gate confidence by trust. */
 typedef enum {
     FlockIeFpNone = 0, /**< no match (or fp==0 "no fingerprint"). */
-    FlockIeFpBuiltin, /**< matched a compiled-in, maintainer-verified fingerprint. */
+    FlockIeFpBuiltin, /**< compiled-in, maintainer-VERIFIED (corroborated by >=2
+                       *   independent captures) -- may reach Confirmed with a Flock OUI. */
+    FlockIeFpCandidate, /**< compiled-in, maintainer-shipped but SINGLE-SOURCE: seen
+                         *   next to one confirmed camera, on one drive, awaiting a
+                         *   second independent capture. Capped at Class?, like a user fp. */
     FlockIeFpUser, /**< matched a user-supplied (signatures.json) fingerprint -- UNVERIFIED. */
 } FlockIeFp;
 
 /**
  * B1: match a probe-request IE-skeleton FNV-1a hash (from the companion's
- * `,fp=<hex32>` field) against the curated table of confirmed-Flock fingerprints
- * PLUS any user-supplied ones registered from signatures.json.
+ * `,fp=<hex32>` field) against the curated tables of Flock fingerprints PLUS any
+ * user-supplied ones registered from signatures.json.
  *
- * PRECISION GUARD: the compiled-in table ships EMPTY/inert -- we do not yet have
- * validated captures, so a built-in match is currently impossible (zero false
- * positives). User fingerprints are UNVERIFIED: a FlockIeFpUser match MUST be
- * capped at the candidate-class level (FlockConfidenceProbeFp) by the caller and
- * can never reach Confirmed. The match is a device-CLASS / firmware-stack
- * signature, never a unique device ID.
+ * Three trust tiers, checked strongest-first so a verified hit wins over a
+ * candidate wins over a user one:
+ *   - VERIFIED built-ins (flock_ie_fps[]) -> may reach Confirmed with a Flock OUI.
+ *   - CANDIDATE built-ins (flock_ie_fps_candidate[]) -> a single-source lead that
+ *     corroborates but the caller MUST cap at Class? (FlockConfidenceProbeFp),
+ *     never Confirmed, until a second independent capture promotes it.
+ *   - USER fingerprints -> UNVERIFIED, also capped at Class? by the caller.
+ *
+ * PRECISION GUARD: the VERIFIED table ships EMPTY/inert -- no hash has two
+ * corroborations yet -- so an auto-Confirm from a fingerprint is currently
+ * impossible. Every shipped fp is a candidate. A match is a device-CLASS /
+ * firmware-stack signature, never a unique device ID.
  *
  * @param fp  IE-skeleton hash; 0 means "no fingerprint" and never matches.
- * @return    FlockIeFpBuiltin / FlockIeFpUser / FlockIeFpNone.
+ * @return    FlockIeFpBuiltin / FlockIeFpCandidate / FlockIeFpUser / FlockIeFpNone.
  */
 FlockIeFp flock_ie_fp_match(uint32_t fp);
 

@@ -5,13 +5,20 @@
 <p align="center"><em>Find the cameras that are watching you.</em></p>
 
 FlipDeFlock is a Flipper Zero app that pairs the Flipper with an ESP32 board to
-survey the radio around you for surveillance cameras: Flock Safety and other ALPR
-hardware, SoundThinking acoustic sensors, and Axon body-worn / in-car police
-equipment. The Flipper is the screen, GPS tagger, and logger; the ESP32 does the
-Wi-Fi sniffing its BLE-only radio can't. It's for security assessments,
+survey the radio around you for surveillance gear: Flock Safety and other ALPR
+hardware, SoundThinking acoustic sensors, Axon and Utility body-worn police
+cameras, and drones. The Flipper is the screen, GPS tagger, and logger; the ESP32
+does the Wi-Fi sniffing its BLE-only radio can't. It's for security assessments,
 anti-surveillance awareness, and CTF/research.
 
-**Passive recon, and cameras only.** Detection is listen-only — no deauth,
+Drones are found by their **Remote ID** broadcast (ASTM F3411), which every
+unmanned aircraft in US airspace is required to transmit. That gives you the
+aircraft's serial, its type, its position, and the position of the person flying
+it. It also works where nothing else does: of the five drone vendors a US police
+department actually buys from, only one holds an IEEE MAC block, so a prefix list
+cannot see the rest.
+
+**Passive recon only.** Detection is listen-only — no deauth,
 injection, or jamming, ever, and nothing is transmitted at any point. Detections
 are indicators, not proof: OUI-only matches are possible, not confirmed, so verify
 by eye. Use it only where you are authorized to.
@@ -195,12 +202,13 @@ firmware; in Marauder mode they explain what's missing.
 - **Reports** — writes to `apps_data/flipdeflock/reports/`: Markdown,
   DeFlock-compatible GeoJSON, and KML. Reports stream row-by-row to SD, so a large scan won't run
   the Flipper out of memory. Pull them with qFlipper or a card reader.
-- **Save hits** *(Settings, off by default)* — keeps your detections across app
+- **Save hits** *(Settings, on by default)* — keeps your detections across app
   restarts in `apps_data/flipdeflock/hits.csv`, so closing the app doesn't throw
   a scan away. Restored hits come back in the list and on the map, showing the age
-  of the stored sighting instead of a live signal reading. It is **off by default
-  on purpose**: a hit log is a durable record of where you have been. Turning it
-  back off deletes the file, and *Reports → Clear Saved Hits* erases it any time.
+  of the stored sighting instead of a live signal reading. **Know what it is:** a
+  hit log is a durable record of where you have been, so if that matters for your
+  situation, switch it off. Turning it off deletes the file, and *Reports → Clear
+  Saved Hits* erases it any time.
 - **Share to DeFlock** — renders a QR per marked, geotagged camera that opens
   [DeFlock](https://deflock.org) at that location on your phone, so you submit
   through the official app's review flow. The Flipper and ESP never touch a
@@ -301,6 +309,78 @@ indicators and verify by eye; if you rely on it for anything that matters, read
 the code and confirm the behavior yourself.
 
 ## What's new
+
+**v0.91** - The app can now learn. Confirming a detection you actually looked at
+saves its probe fingerprint, so the same camera is caught again after its MAC
+randomises -- which every modern Flock unit does. Learned signatures are capped
+at "Class?", never Confirmed, and Reports has a Forget Learned option. Nothing
+is ever sent anywhere.
+
+**v0.90** - Fixes a bug that left a GPIO companion board unpowered whenever the
+Flipper was plugged in. The app stood down from raising the 5V rail whenever USB
+was present, on the assumption that the header was fed from VBUS. It isn't, so on
+a tethered Flipper the board stayed dead and scans reported no frames at all.
+
+**v0.89** - Same features as v0.88, cut so the release tag is green. Two build
+compatibility fixes: the bench emitter now builds on Arduino core 3.x, and the
+companion builds for the ESP32-C5. Neither affected a shipped file. The in-app
+About screen has also been brought up to date with drones, survey mode and the
+redacted exports.
+
+**v0.88** - **Police drones, and exports redacted by default.**
+
+FlipDeFlock now decodes **Remote ID** (ASTM F3411), the broadcast every unmanned
+aircraft in US airspace is legally required to transmit, and shows the aircraft's
+serial, its type, its position -- and **the operator's position**. Over BLE and
+Wi-Fi both. This is the only method that reaches the fleet: of the five drone
+vendors a US police department actually buys from (Skydio, BRINC, Aerodome,
+Flock, Paladin), **only Skydio holds an IEEE MAC block at all**, so three of the
+five can never be found by prefix matching.
+
+Reports now come in three flavours: `Export Marked (Redacted)`, `Export All
+(Redacted)` and `Export All (RAW - private)`. The redacted files keep camera
+coordinates -- that is the point of the report -- but reduce every MAC to its OUI,
+drop the sighting time, your heading and your own labels, and show any SSID that
+is not itself a Flock name as a shape rather than a name. That last one matters: a
+scan sweeps up every household network in range, and an SSID is often a surname
+or a street address and is independently geolocatable. The RAW item names itself,
+sorts last, and writes files suffixed `_RAW`.
+
+Also: **survey mode**, which records every transmitter the companion sees rather
+than only the ones that matched, so an empty drive can be told apart from a
+missed detection; Axon body cameras by their `BWCDEVICE` tag rather than by MAC,
+which survives address randomisation; Utility BodyWorn and Digital Ally; four new
+field-observed Flock BLE names; and a real export bug fixed -- every exported map
+point used to be tagged as a Flock ALPR camera regardless of what it actually
+was, including Axon poles, acoustic sensors and unattributed hits.
+
+Seventeen prefixes the community tables carry were checked against the IEEE
+registry and **rejected**, including a Samsung block and thirteen Espressif ones
+that would have made this app detect its own companion board.
+
+**v0.83** - **Everything a real drive turned up.** A flat battery no longer costs
+you the session (hits flush every 30s instead of only on exit). Probe targets are
+no longer shown as device names, so a phone looking for "NETGEAR19" stops reading
+as a camera called that. Newest hits sort to the top, with the cursor anchored to
+the device so a new arrival can't slide a delete onto the wrong one. **Hold OK** on
+a hit to Confirm, Rename, Mark or Delete, and a new **Saved Hits** screen to review
+a drive afterwards. Renaming never overwrites the observed SSID.
+
+**v0.82** - **Two defaults changed so a drive is worth something out of the box.**
+**Save hits is now on** — it was off for privacy, but that meant the common case
+was losing a whole drive of detections the moment the app closed, with nothing
+written to the card. The toggle is unchanged and turning it off still deletes the
+file. **Alert on hit now defaults to Beep+Vibe**, because a camera you drove past
+is already behind you by the time a silent buzz gets noticed. Upgrading does not
+change settings you already saved. GPS stays off by default.
+
+**v0.81** - **The first real camera fingerprint.** A contributor stood next to a
+Flock camera he confirmed by eye and captured its probe fingerprint, and it now
+ships as a live detection signal. It is seeded conservatively: a matching probe
+lifts a detection from *Likely* to *Class?* (ranked above a bare shared-OUI hit)
+but can never auto-confirm on a single source. Only a fingerprint corroborated by
+a second independent capture, or a real SSID name, reaches *Confirmed*. No
+companion reflash needed.
 
 **v0.80** - **The Support screen's Bitcoin QR never actually worked** -- it fell
 back to a "QR n/a" placeholder every time, because the screen never loaded the QR

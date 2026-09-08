@@ -12,6 +12,7 @@
 #include "helpers/flock_store.h"
 #include "helpers/scan_session.h"
 #include "helpers/report_fmt.h"
+#include "helpers/open_drone_id.h"
 
 #include <math.h>
 #include <string.h>
@@ -36,9 +37,15 @@ void recon_app_report_flock(
     uint32_t ie_fp,
     FlockDevClass dev_class,
     bool hidden) {
-    if(confidence == FlockConfidenceNone) return;
-
     furi_mutex_acquire(app->mutex, FuriWaitForever);
+    // Counted BEFORE the confidence gate, so the diagnostic can separate "the
+    // companion reported nothing" from "it reported plenty and we binned it".
+    app->diag_flock_msgs++;
+    if(confidence == FlockConfidenceNone) {
+        app->diag_rej_conf++;
+        furi_mutex_release(app->mutex);
+        return;
+    }
 
     uint32_t now = furi_get_tick();
     FlockEntry* entry = NULL;
@@ -69,7 +76,10 @@ void recon_app_report_flock(
                     victim = (int)i;
                 }
             }
-            if(victim >= 0) entry = &app->flock[victim];
+            if(victim >= 0)
+                entry = &app->flock[victim];
+            else
+                app->diag_rej_full++; // table full of live rows; this one is lost
         }
         if(entry) {
             memset(entry, 0, sizeof(FlockEntry));
@@ -78,11 +88,16 @@ void recon_app_report_flock(
             entry->lat = NAN;
             entry->lon = NAN;
             entry->heading = NAN;
+            // Remote ID fields, NAN rather than 0 for the same reason as above:
+            // 0/0 is a real place and would plot as one.
+            entry->op_lat = NAN;
+            entry->op_lon = NAN;
             entry->count = 0;
         }
     }
 
     if(entry) {
+        app->diag_accepted++;
         uint8_t prev_conf = (uint8_t)entry->confidence;
         // Captured BEFORE the flag is cleared below: it is what tells the alert
         // rule that this device's latch and confidence were restored from disk
@@ -110,13 +125,39 @@ void recon_app_report_flock(
         // request from the same MAC (which carries no hidden flag at all) must
         // not erase that observation.
         if(hidden) entry->hidden = true;
-        if(ssid && ssid[0] && entry->ssid[0] == '\0') {
-            strncpy(entry->ssid, ssid, RECON_SSID_LEN - 1);
-            entry->ssid[RECON_SSID_LEN - 1] = '\0';
+        // First non-empty name wins, with ONE exception, below.
+        //
+        // Sticky is right for WiFi and must stay that way: on a probe request the
+        // "ssid" is the network the device is LOOKING FOR, not its own name, so
+        // letting a later sighting overwrite a beacon's real SSID with a probe
+        // target would actively corrupt the row.
+        //
+        // BLE has no such ambiguity -- there the name is the device's own GAP
+        // name -- and there it bit us. A device that advertises a stack default
+        // first ("ESP32" from BLEDevice::init("")) and only later announces
+        // "Penguin-..." was stuck displaying the meaningless name forever. That
+        // is exactly how a correctly-Confirmed unit read as an unrelated gadget
+        // on the bench and cost a day chasing a false positive that never was.
+        // So on BLE only, a Flock-shaped name may replace a non-Flock-shaped one.
+        // Monotonic by construction: Flock-shaped never reverts to generic, so it
+        // cannot flap. The operator's own `label` is a separate field and always
+        // wins in the UI regardless (views/flock_view.c).
+        if(ssid && ssid[0]) {
+            bool upgrade = (ftype == 'L') && entry->ssid[0] != '\0' &&
+                           flock_ble_name_should_replace(entry->ssid, ssid);
+            if(entry->ssid[0] == '\0' || upgrade) {
+                strncpy(entry->ssid, ssid, RECON_SSID_LEN - 1);
+                entry->ssid[RECON_SSID_LEN - 1] = '\0';
+            }
         }
         // Geotag with the current fix per the hysteresis rule (haven't tagged yet,
         // or a meaningfully stronger sighting) -- see detect_rules.h.
-        if(flock_geotag_should_update(
+        // A Remote ID position is the AIRCRAFT saying where IT is, to GPS
+        // accuracy. Our geotag is where the OBSERVER was standing. Letting the
+        // weaker fact overwrite the stronger one would silently turn a real
+        // aircraft position into our own, which is both wrong and unnoticeable.
+        if(!entry->pos_broadcast &&
+           flock_geotag_should_update(
                app->gps_valid, !isnan(entry->lat), rssi, entry->geotag_rssi)) {
             entry->lat = app->gps_lat;
             entry->lon = app->gps_lon;
@@ -148,6 +189,12 @@ void recon_app_report_flock(
             app->alert_card_tick = now;
         }
     }
+
+    // Something in the table changed, so the copy on the card is now stale.
+    // recon_hits_autosave_tick() flushes it on an interval; before that existed
+    // the only write was scan_session_stop(), and a flat battery mid-scan took
+    // the whole session with it.
+    app->hits_dirty = true;
 
     furi_mutex_release(app->mutex);
 }
@@ -207,35 +254,29 @@ void recon_app_esp_power_tick(ReconApp* app) {
 
     // Outside the lock: these are HAL calls that talk to the charger IC over
     // I2C, and holding the app mutex across them would stall the ESP worker.
-    // USB ATTACHED: DO NOTHING, AND SAY NOTHING.
+    // USB ATTACHED: TRY ANYWAY, BUT STAY QUIET IF IT REFUSES.
     //
-    // The charger cannot run the 5V boost while VBUS is being supplied by a
-    // host -- OTG and charging are mutually exclusive on this part. Found the
-    // hard way: on a tethered Flipper the enable silently does not take, and the
-    // first version of this reported "5V refused" on a perfectly healthy device.
-    // Every user who runs the app plugged into a laptop or a power bank would
-    // have seen that, every time, for a fault that does not exist.
+    // This used to return early whenever VBUS was above 4 V, on the stated
+    // reasoning that "with VBUS present the header's 5V is fed from it, so a
+    // board that needs 5V already has it".
     //
-    // Nothing is lost by standing down here. With VBUS present the header's 5V
-    // is fed from it, so a board that needs 5V already has it. The case this
-    // feature exists for -- h00die's -- is a Flipper on battery, where the boost
-    // is the only source and does come up.
-    if(furi_hal_power_get_usb_voltage() > 4.0f) {
-        // RE-ARM rather than consume the one attempt. Standing down here is not
-        // a decision about the board, it is a decision about this moment: unplug
-        // the cable and the boost becomes available and relevant. Consuming the
-        // attempt would mean a Flipper that was charging when the app opened
-        // never powers the rail for the rest of the session, which is exactly
-        // the "plug in to top up, then unplug and go" case.
-        //
-        // Resetting the wait tick too keeps the I2C read to once per grace
-        // period rather than once per tick.
-        furi_mutex_acquire(app->mutex, FuriWaitForever);
-        app->otg_attempted = false;
-        app->esp_link_wait_tick = 0;
-        furi_mutex_release(app->mutex);
-        return;
-    }
+    // THAT REASONING IS WRONG, and it was measured wrong on 2026-09-07. With the
+    // Flipper tethered to a PC the header was dead: the companion answered
+    // nothing and the scan header read "ESP 0/s" with zero frames. A single
+    // `power 5v 1` on the CLI brought the board up immediately, same cable, same
+    // session. The Flipper does not pass VBUS through to pin 1; that rail is the
+    // charger's boost either way, and asking for it works while plugged in.
+    //
+    // The cost of the old behaviour was the whole feature, for anyone who works
+    // with the Flipper plugged in: the rail is off after every power cycle, the
+    // app refused to raise it while tethered, and the board simply never came up.
+    //
+    // So try. The one thing to preserve from the old note is the SILENCE: the
+    // charger genuinely cannot boost while it is drawing from VBUS on some
+    // supplies, and the first version of this feature reported "5V refused" on
+    // healthy hardware every time a user was charging. A refusal with VBUS
+    // present is expected, so it re-arms quietly instead of raising a fault.
+    bool vbus = furi_hal_power_get_usb_voltage() > 4.0f;
 
     if(furi_hal_power_is_otg_enabled()) {
         // The user switched it on themselves. Leave it entirely alone -- in
@@ -263,9 +304,16 @@ void recon_app_esp_power_tick(ReconApp* app) {
     furi_mutex_acquire(app->mutex, FuriWaitForever);
     if(ok) {
         app->otg_on_by_us = true;
+    } else if(vbus) {
+        // Expected while the charger is drawing from VBUS. Re-arm silently so it
+        // comes up the moment the cable is pulled, and do NOT show a fault: this
+        // is the false "5V refused" that the old stand-down was written to avoid.
+        app->otg_attempted = false;
+        app->esp_link_wait_tick = 0;
     } else {
-        // Surfaced rather than retried. Retrying a boost that just faulted is
-        // how you cook a board, and the operator can see the reason on screen.
+        // On battery a refusal is real. Surfaced rather than retried: retrying a
+        // boost that just faulted is how you cook a board, and the operator can
+        // see the reason on screen.
         app->otg_failed = true;
     }
     furi_mutex_release(app->mutex);
@@ -364,6 +412,246 @@ void recon_app_set_esp_proto(ReconApp* app, uint8_t version, bool mismatch) {
     app->esp_proto_version = version;
     app->esp_proto_mismatch = mismatch;
     furi_mutex_release(app->mutex);
+}
+
+void recon_app_set_ble_tell(ReconApp* app, const uint8_t mac[6], uint8_t tell) {
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    for(size_t i = 0; i < app->flock_count; i++) {
+        if(memcmp(app->flock[i].mac, mac, 6) == 0) {
+            // Sticky like the other evidence fields: a later sighting that only
+            // saw the weaker signal must not overwrite the stronger one already
+            // recorded. FlockBleTell is ordered strongest-first, so a lower
+            // non-zero value wins.
+            if(tell != 0 && (app->flock[i].ble_tell == 0 || tell < app->flock[i].ble_tell)) {
+                app->flock[i].ble_tell = tell;
+            }
+            break;
+        }
+    }
+    furi_mutex_release(app->mutex);
+}
+
+void recon_app_report_remote_id(
+    ReconApp* app,
+    const uint8_t addr[6],
+    int8_t rssi,
+    const uint8_t* payload,
+    size_t payload_len) {
+    OdidReport rep;
+    odid_report_init(&rep);
+    // Decode BEFORE taking the lock: this is pure work on a stack buffer and the
+    // mutex is also held by the UI thread on every redraw.
+    if(!odid_parse_ble_service_data(payload, payload_len, &rep)) return;
+
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    app->diag_flock_msgs++;
+
+    uint32_t now = furi_get_tick();
+    FlockEntry* entry = NULL;
+    for(size_t i = 0; i < app->flock_count; i++) {
+        if(memcmp(app->flock[i].mac, addr, 6) == 0) {
+            entry = &app->flock[i];
+            break;
+        }
+    }
+
+    if(!entry) {
+        if(app->flock_count < RECON_FLOCK_MAX) {
+            entry = &app->flock[app->flock_count++];
+        } else {
+            // Same eviction rule as recon_app_report_flock(): reclaim the least
+            // valuable ARCHIVED row, never a live one.
+            int victim = -1;
+            for(size_t i = 0; i < app->flock_count; i++) {
+                if(!app->flock[i].archived) continue;
+                if(victim < 0 || flock_store_evict_better(
+                                     (uint8_t)app->flock[i].confidence,
+                                     app->flock[i].seen_epoch,
+                                     (uint8_t)app->flock[victim].confidence,
+                                     app->flock[victim].seen_epoch)) {
+                    victim = (int)i;
+                }
+            }
+            if(victim >= 0)
+                entry = &app->flock[victim];
+            else
+                app->diag_rej_full++;
+        }
+        if(entry) {
+            memset(entry, 0, sizeof(FlockEntry));
+            memcpy(entry->mac, addr, 6);
+            entry->first_tick = now;
+            entry->lat = NAN;
+            entry->lon = NAN;
+            entry->heading = NAN;
+            entry->op_lat = NAN;
+            entry->op_lon = NAN;
+        }
+    }
+    if(!entry) {
+        furi_mutex_release(app->mutex);
+        return;
+    }
+
+    app->diag_accepted++;
+    uint8_t prev_conf = (uint8_t)entry->confidence;
+    entry->count++;
+    entry->last_tick = now;
+    entry->archived = false;
+    if(rssi != 0 && (entry->rssi == 0 || rssi > entry->rssi)) entry->rssi = rssi;
+    entry->ftype = 'L'; // arrived over BLE
+    entry->dev_class = (uint8_t)FlockClassDrone;
+
+    // CONFIRMED, and this is not the usual kind of claim. Every other detection
+    // in the app is an inference from a shared vendor prefix or from frame
+    // behaviour. This is the aircraft transmitting its own identity because 14
+    // CFR Part 89 requires it to. What is confirmed is "a Remote ID broadcast was
+    // received", i.e. something is flying and announcing itself -- NOT that it is
+    // a police drone, which no signature could establish. The class says
+    // "unmanned aircraft" and stops there.
+    if((uint8_t)FlockConfidenceConfirmed > (uint8_t)entry->confidence) {
+        entry->confidence = FlockConfidenceConfirmed;
+    }
+
+    // MERGE, never replace. One BLE legacy advert carries ONE message and the
+    // aircraft cycles types, so the serial arrives in one advert and the operator
+    // position in another. Overwriting on each advert would make both fields
+    // flicker and would never show them together.
+    if(rep.have_id) {
+        if(rep.uas_id[0]) {
+            strncpy(entry->ssid, rep.uas_id, sizeof(entry->ssid) - 1);
+            entry->ssid[sizeof(entry->ssid) - 1] = '\0';
+        }
+        entry->ua_type = rep.ua_type;
+    }
+    if(!isnan(rep.lat) && !isnan(rep.lon)) {
+        // The AIRCRAFT's own position, which is a strictly better fact than our
+        // geotag of where we were standing. pos_broadcast records the difference
+        // so the map and the report can say which one they are showing, and so
+        // the geotag path stops overwriting it.
+        entry->lat = rep.lat;
+        entry->lon = rep.lon;
+        entry->pos_broadcast = true;
+    }
+    if(!isnan(rep.op_lat) && !isnan(rep.op_lon)) {
+        entry->op_lat = rep.op_lat;
+        entry->op_lon = rep.op_lon;
+    }
+
+    entry->seen_epoch = furi_hal_rtc_get_timestamp();
+
+    // Alert on the same path as every other detection -- set the flag here and
+    // let the GUI tick raise it, because this runs on the ESP worker thread.
+    if(flock_alert_should_fire_ex(
+           prev_conf,
+           (uint8_t)entry->confidence,
+           entry->alerted,
+           false,
+           now,
+           app->alert_last_tick,
+           app->alert_have_fired,
+           flock_alert_min_conf_rung(app->settings.alert_min_conf))) {
+        entry->alerted = true;
+        app->alert_pending = true;
+        app->alert_last_tick = now;
+        app->alert_have_fired = true;
+        memcpy(app->alert_card_mac, entry->mac, 6);
+        app->alert_card_tick = now;
+    }
+
+    app->hits_dirty = true;
+    furi_mutex_release(app->mutex);
+}
+
+void recon_app_survey_add(
+    ReconApp* app,
+    const uint8_t mac[6],
+    uint32_t fp,
+    int8_t rssi,
+    uint8_t channel,
+    uint16_t count) {
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    SurveyEntry* e = NULL;
+    for(size_t i = 0; i < app->survey_count; i++) {
+        if(memcmp(app->survey[i].mac, mac, 6) == 0) {
+            e = &app->survey[i];
+            break;
+        }
+    }
+    if(!e) {
+        if(app->survey_count < RECON_SURVEY_MAX) {
+            e = &app->survey[app->survey_count++];
+            memset(e, 0, sizeof(SurveyEntry));
+            memcpy(e->mac, mac, 6);
+        } else {
+            // Full: drop the least-seen row rather than the newest. A persistent
+            // emitter is the interesting one, and a camera is persistent.
+            size_t victim = 0;
+            for(size_t i = 1; i < app->survey_count; i++) {
+                if(app->survey[i].count < app->survey[victim].count) victim = i;
+            }
+            if(app->survey[victim].count < count) {
+                e = &app->survey[victim];
+                memset(e, 0, sizeof(SurveyEntry));
+                memcpy(e->mac, mac, 6);
+            }
+        }
+    }
+    if(e) {
+        // The companion sends running totals, so take its value rather than
+        // incrementing -- a dump repeated every interval would otherwise multiply
+        // the count by the number of dumps.
+        e->count = count;
+        e->fp = fp;
+        e->channel = channel;
+        if(rssi > e->rssi || e->rssi == 0) e->rssi = rssi;
+    }
+    furi_mutex_release(app->mutex);
+}
+
+void recon_survey_save(ReconApp* app) {
+    // Written even with ZERO rows, on purpose. "No file" is indistinguishable
+    // from "the feature is broken" -- which is exactly how this landed on issue
+    // #25, where short sessions produced nothing and the reporter could not tell
+    // whether it had run. A header with no rows is a real answer: the survey ran
+    // and nothing was probing.
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_common_mkdir(storage, RECON_APP_FOLDER);
+    File* file = storage_file_alloc(storage);
+    // Truncating rather than appending: this is a snapshot of what was in the air
+    // during the last session, not a running history, and a stale row from a
+    // different street would be actively misleading when hunting one camera.
+    if(storage_file_open(file, RECON_SURVEY_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+        FuriString* out = furi_string_alloc();
+        furi_string_cat_str(
+            out,
+            "# FlipDeFlock probe survey -- every wildcard-probe transmitter seen, matched or not\n"
+            "# No SSID and no position. A high count next to a camera you can see is that camera.\n"
+            "mac,rssi,channel,ie_fp,count\n");
+        furi_mutex_acquire(app->mutex, FuriWaitForever);
+        for(size_t i = 0; i < app->survey_count; i++) {
+            SurveyEntry* e = &app->survey[i];
+            furi_string_cat_printf(
+                out,
+                "%02X:%02X:%02X:%02X:%02X:%02X,%d,%u,%08lx,%u\n",
+                e->mac[0],
+                e->mac[1],
+                e->mac[2],
+                e->mac[3],
+                e->mac[4],
+                e->mac[5],
+                e->rssi,
+                e->channel,
+                (unsigned long)e->fp,
+                (unsigned)e->count);
+        }
+        furi_mutex_release(app->mutex);
+        storage_file_write(file, furi_string_get_cstr(out), furi_string_size(out));
+        furi_string_free(out);
+    }
+    storage_file_close(file);
+    storage_file_free(file);
+    furi_record_close(RECORD_STORAGE);
 }
 
 void recon_app_set_esp_dropped(ReconApp* app, uint32_t dropped) {
@@ -486,7 +774,16 @@ void recon_app_ble_add(
     char serial[RECON_BLE_SERIAL_LEN] = "";
     uint8_t model = FlockBleModelUnknown;
     if(cat == BleCatFlock) {
-        flock_ble_extract_serial(mfg, mfg_len, name, serial, sizeof(serial));
+        // Only read the MANUFACTURER PAYLOAD as a Flock serial when it actually
+        // is Flock's. The companion now sends mfghex for any cat=1 device that
+        // carries manufacturer data -- not just 0x09C8 -- so a unit classified by
+        // naming, Raven GATT or an OUI can arrive with some other vendor's blob,
+        // and flock_ble_extract_serial() would happily report the longest
+        // alphanumeric run in it as a device serial. The GAP-name fallback stays
+        // unconditional: that path validates the name's own shape.
+        bool flock_mfg = (company == FLOCK_BLE_COMPANY_ID);
+        flock_ble_extract_serial(
+            flock_mfg ? mfg : NULL, flock_mfg ? mfg_len : 0, name, serial, sizeof(serial));
         model = (uint8_t)flock_ble_model_ex(serial, name, raven_gatt);
     }
 
@@ -521,10 +818,24 @@ void recon_app_ble_add(
         // detail "FOLLOWING ... over %lus" readout (which always printed 0s).
         e->last_tick = now;
         if(cat) e->cat = cat;
-        e->company = company;
-        if(name && name[0] && e->name[0] == '\0') {
-            strncpy(e->name, name, RECON_SSID_LEN - 1);
-            e->name[RECON_SSID_LEN - 1] = '\0';
+        // Sticky, like cat/dev_class/ie_fp around it. A device advertises several
+        // payloads in rotation, and only some carry manufacturer data; writing
+        // this unconditionally let a later advert with none (which arrives as
+        // BLE_COMPANY_NONE) erase a 0x09C8 we had already captured, throwing away
+        // the strongest BLE evidence we get.
+        if(company != BLE_COMPANY_NONE) e->company = company;
+        // Same specificity upgrade as the Flock table above: a Flock-shaped name
+        // may replace a generic one that was merely seen first. A single BLE
+        // radio advertises several identities from ONE address (the bench emitter
+        // does exactly this), so whichever advert happens to land first must not
+        // get to name the device permanently.
+        if(name && name[0]) {
+            bool upgrade =
+                e->name[0] != '\0' && flock_ble_name_should_replace(e->name, name);
+            if(e->name[0] == '\0' || upgrade) {
+                strncpy(e->name, name, RECON_SSID_LEN - 1);
+                e->name[RECON_SSID_LEN - 1] = '\0';
+            }
         }
         if(serial[0] && e->serial[0] == '\0') {
             strncpy(e->serial, serial, RECON_BLE_SERIAL_LEN - 1);
@@ -563,6 +874,12 @@ void recon_app_ble_add(
             0,
             (cat == BleCatAxon) ? FlockClassBodycam : FlockClassAlpr,
             false);
+        // Record WHAT matched, alongside how sure we are. Two Confirmed rows can
+        // rest on very different evidence -- 0x09C8 is the battery VENDOR's id,
+        // the Raven GATT is Flock's own -- and the operator should be able to see
+        // which. Does not touch the rung.
+        recon_app_set_ble_tell(
+            app, addr, (uint8_t)flock_ble_tell(company, name, raven_gatt, addr));
     }
 }
 
@@ -664,11 +981,23 @@ static void recon_settings_defaults(ReconApp* app) {
     app->settings.gps_source = ReconGpsSourceFlipper; // the wiring the docs describe
     app->settings.esp_gps_pin = 16; // a common GPS RX on ESP32 carrier boards
     app->settings.sound = true;
-    app->settings.alert_mode = ReconAlertVibro; // haptic-first, like the ELEVATED alert
+    // Beep AND vibrate. A camera you drove past is gone by the time you notice a
+    // silent buzz in a pocket, and the whole point of the alert is to catch one
+    // you were not watching the screen for. `sound` above still gates the beep,
+    // and Flipper Notifications can silence it system-wide, so this is a louder
+    // default rather than an unmutable one.
+    app->settings.alert_mode = ReconAlertBoth;
     app->settings.alert_min_conf = AlertConfLikely; // precision over recall stays the default
     app->settings.flash_fast = false; // safe 115200 by default
     app->settings.esp_auto_5v = true; // a board on the header is dead without it
-    app->settings.save_hits = false; // privacy: a hit log is a record of where you have been
+    // ON by default. This was off for privacy -- a hit log is a durable record of
+    // where you have been -- but off by default meant the common case was losing a
+    // whole drive's worth of detections on app exit, with nothing written to the
+    // card and no warning that it had happened. Losing the data people go out to
+    // collect is the worse failure. The toggle stays, and switching it back off
+    // still deletes hits.csv, so opting out remains one switch away.
+    app->settings.save_hits = true;
+    app->settings.card_autodismiss = true; // unchanged behaviour by default
     app->settings.log_serials = false; // privacy: don't catalogue police asset serials by default
 }
 
@@ -679,7 +1008,7 @@ void recon_settings_save(ReconApp* app) {
         FuriString* s = furi_string_alloc();
         furi_string_printf(
             s,
-            "backend=%d\nesp_band=%d\nesp_uart=%d\ngps_uart=%d\nesp_baud=%lu\ngps_baud=%lu\nmarauder_cmd=%d\ngps_enabled=%d\ngps_source=%d\nesp_gps_pin=%d\nsound=%d\nflash_fast=%d\nlog_serials=%d\nalert_mode=%d\nalert_min_conf=%d\nsave_hits=%d\nesp_auto_5v=%d\n",
+            "backend=%d\nesp_band=%d\nesp_uart=%d\ngps_uart=%d\nesp_baud=%lu\ngps_baud=%lu\nmarauder_cmd=%d\ngps_enabled=%d\ngps_source=%d\nesp_gps_pin=%d\nsound=%d\nflash_fast=%d\nlog_serials=%d\nalert_mode=%d\nalert_min_conf=%d\nsave_hits=%d\nesp_auto_5v=%d\ncard_autodismiss=%d\n",
             app->settings.backend,
             app->settings.esp_band,
             app->settings.esp_uart,
@@ -696,7 +1025,8 @@ void recon_settings_save(ReconApp* app) {
             app->settings.alert_mode,
             app->settings.alert_min_conf,
             app->settings.save_hits ? 1 : 0,
-            app->settings.esp_auto_5v ? 1 : 0);
+            app->settings.esp_auto_5v ? 1 : 0,
+            app->settings.card_autodismiss ? 1 : 0);
 
         storage_file_write(file, furi_string_get_cstr(s), furi_string_size(s));
         furi_string_free(s);
@@ -745,6 +1075,8 @@ static void recon_settings_apply_kv(ReconApp* app, const char* key, long val, co
         app->settings.alert_mode = (uint8_t)val; // corrupt value -> keep the default
     else if(strcmp(key, "alert_min_conf") == 0 && val >= 0 && val < AlertConfCount)
         app->settings.alert_min_conf = (uint8_t)val; // ditto -- range-checked, not trusted
+    else if(strcmp(key, "card_autodismiss") == 0)
+        app->settings.card_autodismiss = (val != 0);
     else if(strcmp(key, "save_hits") == 0)
         app->settings.save_hits = (val != 0);
     else if(strcmp(key, "esp_auto_5v") == 0)
@@ -802,6 +1134,9 @@ static void recon_hits_rec_from_entry(FlockStoreRec* r, const FlockEntry* e) {
     r->ftype = e->ftype;
     r->conf = (uint8_t)e->confidence;
     r->dev_class = e->dev_class;
+    r->op_lat = e->op_lat;
+    r->op_lon = e->op_lon;
+    r->ua_type = e->ua_type;
     r->hidden = e->hidden;
     r->ie_fp = e->ie_fp;
     r->lat = e->lat;
@@ -809,6 +1144,8 @@ static void recon_hits_rec_from_entry(FlockStoreRec* r, const FlockEntry* e) {
     r->heading = e->heading;
     r->count = e->count;
     r->marked = e->marked;
+    r->confirmed = e->confirmed;
+    snprintf(r->label, sizeof(r->label), "%s", e->label);
     r->epoch = e->seen_epoch;
 }
 
@@ -862,6 +1199,152 @@ void recon_hits_save(ReconApp* app) {
     storage_file_free(file);
 }
 
+// How long a detection may sit in RAM before it reaches the card. The bound on
+// what a flat battery or a crash can take with it. 30 s costs one rewrite of a
+// <=64-row file per half minute during an active scan, which is nothing next to
+// losing the drive.
+#define RECON_HITS_AUTOSAVE_MS 30000u
+
+// Short enough that a brief scan still collects something on its own, and far
+// below anything that competes with detection traffic: a full 32-row dump is
+// ~1.3 KB, which is about a tenth of a second of a 115200 link. The session-end
+// dump in scan_session_stop() is what actually guarantees a file; this is the
+// crash-safety net in between.
+#define RECON_SURVEY_POLL_MS 10000u
+
+void recon_survey_tick(ReconApp* app) {
+    if(!app->esp) return; // no link, nothing to ask
+    uint32_t now = furi_get_tick();
+    if(app->survey_last_poll != 0 &&
+       (now - app->survey_last_poll) < RECON_SURVEY_POLL_MS) {
+        return;
+    }
+    app->survey_last_poll = now;
+    esp_link_send(app->esp, "survey");
+}
+
+void recon_hits_autosave_tick(ReconApp* app) {
+    if(!app->settings.save_hits) return;
+
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    bool dirty = app->hits_dirty;
+    uint32_t last = app->hits_last_save;
+    furi_mutex_release(app->mutex);
+
+    if(!dirty) return;
+    uint32_t now = furi_get_tick();
+    // First flush of a session happens one full interval in, not instantly: a
+    // scan that finds something in its first second would otherwise write on the
+    // very next tick, before the table has settled.
+    if(last != 0 && (now - last) < RECON_HITS_AUTOSAVE_MS) return;
+    if(last == 0) {
+        // Seed the clock on the first dirty tick so the interval is measured from
+        // "first detection", not from app launch.
+        furi_mutex_acquire(app->mutex, FuriWaitForever);
+        app->hits_last_save = now;
+        furi_mutex_release(app->mutex);
+        return;
+    }
+
+    // Clear the flag BEFORE writing. A detection that lands mid-write re-dirties
+    // it and gets picked up next interval; clearing afterwards could swallow that
+    // update instead, which is the one direction that loses data.
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    app->hits_dirty = false;
+    app->hits_last_save = now;
+    furi_mutex_release(app->mutex);
+
+    recon_hits_save(app);
+}
+
+void recon_diag_begin(ReconApp* app) {
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    app->diag_flock_msgs = 0;
+    app->diag_accepted = 0;
+    app->diag_rej_conf = 0;
+    app->diag_rej_full = 0;
+    app->diag_start_epoch = furi_hal_rtc_get_timestamp();
+    furi_mutex_release(app->mutex);
+}
+
+void recon_diag_save(ReconApp* app) {
+    // Never write a row for a session that never started (the Main Menu calls
+    // scan_session_stop() on entry, including the one at launch).
+    if(app->diag_start_epoch == 0) return;
+
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    uint32_t start = app->diag_start_epoch;
+    uint32_t msgs = app->diag_flock_msgs;
+    uint32_t acc = app->diag_accepted;
+    uint32_t rej_c = app->diag_rej_conf;
+    uint32_t rej_f = app->diag_rej_full;
+    uint32_t lines = app->esp_lines;
+    uint32_t dropped = app->esp_dropped_lines;
+    uint32_t reboots = app->esp_reboots;
+    uint32_t frames = app->esp_frames;
+    uint32_t ehits = app->esp_hits;
+    uint16_t band_ch = app->esp_band_channels;
+    uint8_t band_act = app->esp_band_actual;
+    uint8_t band_req = app->settings.esp_band;
+    uint8_t backend = app->settings.backend;
+    uint8_t proto = app->esp_proto_version;
+    // The COMPANION's build, next to the app's. A field report that says only
+    // which app version produced it answers half the question: the pair is what
+    // was tested, and a companion left over from an older release is a leading
+    // cause of "it detects nothing" reports. "-" means firmware older than v0.88,
+    // which reported no build at all.
+    char esp_build[12];
+    snprintf(esp_build, sizeof(esp_build), "%s", app->esp_build[0] ? app->esp_build : "-");
+    uint32_t table = (uint32_t)app->flock_count;
+    app->diag_start_epoch = 0; // one row per session, not one per teardown call
+    furi_mutex_release(app->mutex);
+
+    uint32_t end = furi_hal_rtc_get_timestamp();
+
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_common_mkdir(storage, RECON_APP_FOLDER);
+    File* file = storage_file_alloc(storage);
+    if(storage_file_open(file, RECON_DIAG_PATH, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        FuriString* s = furi_string_alloc();
+        if(storage_file_size(file) == 0) {
+            furi_string_cat_str(
+                s,
+                "# FlipDeFlock session diagnostics v2 -- counts only, no MAC/SSID/position\n"
+                "start,end,dur_s,ver,esp_ver,backend,band_req,band_act,band_ch,proto,"
+                "esp_lines,esp_dropped,esp_reboots,esp_frames,esp_hits,"
+                "reports,accepted,rej_conf,rej_full,table\n");
+        }
+        furi_string_cat_printf(
+            s,
+            "%lu,%lu,%lu,%s,%s,%u,%u,%u,%u,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+            (unsigned long)start,
+            (unsigned long)end,
+            (unsigned long)(end - start),
+            RECON_VERSION,
+            esp_build,
+            (unsigned)backend,
+            (unsigned)band_req,
+            (unsigned)band_act,
+            (unsigned)band_ch,
+            (unsigned)proto,
+            (unsigned long)lines,
+            (unsigned long)dropped,
+            (unsigned long)reboots,
+            (unsigned long)frames,
+            (unsigned long)ehits,
+            (unsigned long)msgs,
+            (unsigned long)acc,
+            (unsigned long)rej_c,
+            (unsigned long)rej_f,
+            (unsigned long)table);
+        storage_file_write(file, furi_string_get_cstr(s), furi_string_size(s));
+        furi_string_free(s);
+    }
+    storage_file_close(file);
+    storage_file_free(file);
+    furi_record_close(RECORD_STORAGE);
+}
+
 void recon_hits_save_after_delete(ReconApp* app) {
     if(!app->settings.save_hits) return;
 
@@ -894,6 +1377,12 @@ static void recon_hits_add(ReconApp* app, const FlockStoreRec* r) {
     e->confidence = (FlockConfidence)r->conf;
     e->dev_class = r->dev_class;
     e->hidden = r->hidden;
+    // Remote ID. NAN for anything that is not an aircraft, or that was saved
+    // before v4 -- never 0, which is a real place and would draw a pilot marker
+    // in the Gulf of Guinea.
+    e->op_lat = r->op_lat;
+    e->op_lon = r->op_lon;
+    e->ua_type = r->ua_type;
     e->ie_fp = r->ie_fp;
     e->lat = r->lat;
     e->lon = r->lon;
@@ -904,6 +1393,8 @@ static void recon_hits_add(ReconApp* app, const FlockStoreRec* r) {
     e->geotag_rssi = isnan(r->lat) ? 0 : r->rssi;
     e->count = r->count;
     e->marked = r->marked;
+    e->confirmed = r->confirmed;
+    snprintf(e->label, sizeof(e->label), "%s", r->label);
     e->seen_epoch = r->epoch;
     e->archived = true;
     // A restored hit must not buzz: the alert announces a NEW detection, and the
@@ -1043,6 +1534,17 @@ static void recon_tick_event_callback(void* context) {
     // that must not need a per-scene call somebody forgets to add. A no-op when
     // the phone source is not selected, and on firmware without the service.
     gps_rpc_tick(app->gps_rpc);
+    // Get detections onto the card while the scan is still running. Hoisted here
+    // for the same reason as the three above: every scene gets it and no new
+    // scene has to remember. Cheap -- it is a flag test on all but one tick in
+    // 120, and a no-op entirely when Save hits is off.
+    recon_hits_autosave_tick(app);
+    // Pull the probe survey off the companion periodically. It is held in RAM on
+    // the board and only moves when asked, so this is the one thing that puts it
+    // on the card -- and it must happen DURING the session, because the link is
+    // torn down before the save runs. 30 s: a bounded handful of lines, far below
+    // anything that competes with detection traffic.
+    recon_survey_tick(app);
     scene_manager_handle_tick_event(app->scene_manager);
 }
 
@@ -1085,6 +1587,7 @@ static ReconApp* recon_app_alloc(void) {
     app->var_item_list = variable_item_list_alloc();
     app->widget = widget_alloc();
     app->popup = popup_alloc();
+    app->text_input = text_input_alloc();
     app->flock_view = flock_view_alloc();
     flock_view_set_app(app->flock_view, app);
     app->flock_detail_view = flock_detail_view_alloc();
@@ -1104,6 +1607,8 @@ static ReconApp* recon_app_alloc(void) {
         variable_item_list_get_view(app->var_item_list));
     view_dispatcher_add_view(app->view_dispatcher, ReconViewWidget, widget_get_view(app->widget));
     view_dispatcher_add_view(app->view_dispatcher, ReconViewPopup, popup_get_view(app->popup));
+    view_dispatcher_add_view(
+        app->view_dispatcher, ReconViewTextInput, text_input_get_view(app->text_input));
     view_dispatcher_add_view(
         app->view_dispatcher, ReconViewFlock, flock_view_get_view(app->flock_view));
     view_dispatcher_add_view(
@@ -1127,6 +1632,7 @@ static void recon_app_free(ReconApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewVarItemList);
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewWidget);
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewPopup);
+    view_dispatcher_remove_view(app->view_dispatcher, ReconViewTextInput);
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewFlock);
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewFlockDetail);
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewFlockMap);
@@ -1137,6 +1643,7 @@ static void recon_app_free(ReconApp* app) {
     variable_item_list_free(app->var_item_list);
     widget_free(app->widget);
     popup_free(app->popup);
+    text_input_free(app->text_input);
     flock_view_free(app->flock_view);
     flock_detail_view_free(app->flock_detail_view);
     flock_map_view_free(app->flock_map_view);

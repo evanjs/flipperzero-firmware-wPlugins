@@ -78,6 +78,7 @@
  * RX from Flipper (commands, newline-terminated):
  *   scan   start reporting        stop   pause reporting
  *   ver    re-send banner         ch <n> lock to channel n (0 = hop)
+ *   bootloader  enter UART download mode (software; no BOOT button needed)
  *   band <2g|5g|all>         pick which band(s) the hopper sweeps (C5 only;
  *                            a 2.4-only radio always ends up on 2g)
  *   locate <w|b> <mac> [ch]  stream LOC for a target (w=Wi-Fi, b=BLE; mac is
@@ -92,18 +93,55 @@
 #include <Arduino.h>
 #include <stdarg.h> // buf_appendf()
 #include "soc/soc_caps.h" // SOC_GPIO_PIN_COUNT / SOC_GPIO_VALID_GPIO_MASK
+// RTC_CNTL_FORCE_DOWNLOAD_BOOT, for the hands-free "bootloader" command.
+//
+// __has_include, NOT a plain include: this header does not exist on every
+// target. The ESP32-C5 has no soc/rtc_cntl_reg.h at all and the compile died
+// with "No such file or directory" -- caught by the core-3.x/C5 compat job,
+// which exists for exactly this. Where the header is missing the macros are
+// undefined, so the command's #else branch reports "cannot" instead, which is
+// the honest answer on a part with no software download-boot anyway.
+#if defined(__has_include)
+#if __has_include("soc/rtc_cntl_reg.h")
+#include "soc/rtc_cntl_reg.h"
+#endif
+#endif
 #include "soc/spi_pins.h" // SPI_IOMUX_PIN_NUM_* -- this chip's flash pins
 #include "soc/uart_pins.h" // U0TXD_GPIO_NUM / U0RXD_GPIO_NUM -- the Flipper link
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
 
+/* ---- Bluetooth capability -------------------------------------------------
+ *
+ * The ESP32-S2 has NO Bluetooth radio at all. The Arduino core therefore ships
+ * no BLE library for it and every BLE symbol below is simply absent, so this
+ * sketch did not compile for that target at all -- it died on BLEAddress. That
+ * is not a build we forgot to publish; the silicon cannot do Bluetooth.
+ *
+ * On such a part this now builds as a WI-FI-ONLY companion: probe/OUI camera
+ * detection works exactly as it does anywhere else, and the BLE half of Flock
+ * detection is gone permanently. Worth saying out loud, because an operator on
+ * a Wi-Fi-only board who finds nothing cannot otherwise tell "there was no
+ * camera" from "this board cannot see half of them".
+ *
+ * CONFIG_BT_ENABLED / CONFIG_BLUEDROID_ENABLED come from sdkconfig.h, already
+ * pulled in by Arduino.h above.
+ */
+#if defined(CONFIG_BT_ENABLED) && defined(CONFIG_BLUEDROID_ENABLED)
+#define FLOCK_HAS_BLE 1
+#else
+#define FLOCK_HAS_BLE 0
+#endif
+
+#if FLOCK_HAS_BLE
 #include <BLEDevice.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 #include <BLEClient.h>
 #include <BLERemoteService.h>
 #include <BLERemoteCharacteristic.h>
+#endif
 
 #include <string>
 
@@ -151,9 +189,11 @@ static inline std::string fstr(const String& s) {
 /** Same, but `cont` keeps results accumulated from earlier slices. */
 #define FLOCK_SCAN_CONT(scan, secs, cont) (*(scan)->start((secs), (cont)))
 /** 3.x: already a flat pointer to the 6 address bytes. */
+#if FLOCK_HAS_BLE
 static inline const uint8_t* fble_addr_bytes(BLEAddress& a) {
     return a.getNative();
 }
+#endif
 #else
 /** 2.x already returns std::string; pass through so call sites stay identical. */
 static inline std::string fstr(const std::string& s) {
@@ -164,12 +204,14 @@ static inline std::string fstr(const std::string& s) {
 /** Same, but `cont` keeps results accumulated from earlier slices. */
 #define FLOCK_SCAN_CONT(scan, secs, cont) ((scan)->start((secs), (cont)))
 /** 2.x: uint8_t(*)[6], so one deref yields the uint8_t*. */
+#if FLOCK_HAS_BLE
 static inline const uint8_t* fble_addr_bytes(BLEAddress& a) {
     return *a.getNative();
 }
 #endif
+#endif
 
-// ---- Flock-associated OUI prefixes (29) ----------------------------------
+// ---- Flock-associated OUI prefixes (31) ----------------------------------
 // MUST stay byte-identical to flock_ouis[] in helpers/flock_db.c. There is no
 // shared header (an Arduino sketch cannot include the app's), so editing one
 // side alone would silently desync ESP-side `conf` scoring from the Flipper's.
@@ -201,7 +243,7 @@ static const uint8_t FLOCK_OUIS[][3] = {
     {0xe8, 0xd0, 0xfc}, {0xe0, 0x4f, 0x43}, {0xb8, 0x1e, 0xa4}, {0x70, 0x08, 0x94},
     {0x58, 0x8e, 0x81}, {0xec, 0x1b, 0xbd}, {0x3c, 0x71, 0xbf}, {0x58, 0x00, 0xe3},
     {0x90, 0x35, 0xea}, {0x5c, 0x93, 0xa2}, {0x64, 0x6e, 0x69}, {0x82, 0x6b, 0xf2},
-    {0xb4, 0x1e, 0x52},
+    {0xb4, 0x1e, 0x52}, {0xe0, 0x0a, 0xf6}, {0x38, 0x5b, 0x44},
 };
 static const size_t FLOCK_OUI_COUNT = sizeof(FLOCK_OUIS) / sizeof(FLOCK_OUIS[0]);
 
@@ -233,7 +275,7 @@ static const uint8_t AXON_OUIS[][3] = {
 };
 static const size_t AXON_OUI_COUNT = sizeof(AXON_OUIS) / sizeof(AXON_OUIS[0]);
 
-// ---- Vendor-exclusive competitor OUIs (12 across 5 vendors) --------------
+// ---- Vendor-exclusive competitor OUIs (15 across 7 vendors) --------------
 // Ubicquia (1), Motorola Solutions (7), Verkada (1), Genetec (2), Avigilon (1).
 // MUST stay byte-identical to ubicquia_ouis[] / motorola_ouis[] / verkada_ouis[]
 // / genetec_ouis[] / avigilon_ouis[] in helpers/flock_db.c -- same hand-sync
@@ -279,6 +321,52 @@ static const uint8_t AVIGILON_OUIS[][3] = {
 };
 static const size_t AVIGILON_OUI_COUNT = sizeof(AVIGILON_OUIS) / sizeof(AVIGILON_OUIS[0]);
 
+// Utility, Inc "BodyWorn" body cameras. Exclusive MA-L blocks (IEEE 2026-09-07).
+// MUST stay byte-identical to utility_ouis[] in helpers/flock_db.c.
+static const uint8_t UTILITY_OUIS[][3] = {
+    {0x00, 0x09, 0xbc}, {0x00, 0x16, 0xed},
+};
+static const size_t UTILITY_OUI_COUNT = sizeof(UTILITY_OUIS) / sizeof(UTILITY_OUIS[0]);
+
+// Digital Ally "FirstVU" body/in-car cameras. Exclusive MA-L block.
+// MUST stay byte-identical to digitalally_ouis[] in helpers/flock_db.c.
+static const uint8_t DIGITALALLY_OUIS[][3] = {
+    {0x00, 0x23, 0xbd},
+};
+static const size_t DIGITALALLY_OUI_COUNT =
+    sizeof(DIGITALALLY_OUIS) / sizeof(DIGITALALLY_OUIS[0]);
+
+
+// ---- Drone manufacturers (24) --------------------------------------------
+//
+// A FALLBACK to Remote ID, never the main path. Of the five drone vendors a US
+// police department realistically buys from -- Skydio, BRINC, Aerodome, Flock,
+// Paladin -- only Skydio holds an IEEE block at all, so three of the five cannot
+// be matched by any prefix table, ever. The aircraft that matters is found by its
+// ASTM F3411 Remote ID broadcast (decoded app-side), which is a
+// legal mandate and vendor-independent.
+//
+// A hit here is NOT a police drone: DJI's blocks are on far more hobbyist
+// quadcopters than anything else. It scores like any other bare OUI.
+//
+// MA-L HOLDERS ONLY. Autel Robotics, Yuneec, Inspired Flight, ideaForge and the
+// rest sit inside shared IEEE Registration Authority MA-M/MA-S blocks, and this
+// table is three bytes wide, so matching them would flag unrelated hardware as an
+// aircraft. Excluded on purpose despite being DJI: f8:40:68 (Ronin gimbals) and
+// 20:1f:55 (Osmo handhelds) -- neither flies.
+//
+// MUST stay byte-identical to drone_ouis[] in helpers/flock_db.c; the CI parity
+// gate enforces it. EXACTLY four entries per row.
+static const uint8_t DRONE_OUIS[][3] = {
+    {0x60, 0x60, 0x1f}, {0x34, 0xd2, 0x62}, {0x48, 0x1c, 0xb9}, {0xe4, 0x7a, 0x2c},
+    {0x58, 0xb8, 0x58}, {0x04, 0xa8, 0x5a}, {0x8c, 0x58, 0x23}, {0x0c, 0x9a, 0xe6},
+    {0x88, 0x29, 0x85}, {0x4c, 0x43, 0xf6}, {0x9c, 0x5a, 0x8a}, {0xec, 0x72, 0xf7},
+    {0x34, 0x91, 0xf0}, {0x38, 0x1d, 0x14}, {0x00, 0x12, 0x1c}, {0x00, 0x26, 0x7e},
+    {0x90, 0x03, 0xb7}, {0x90, 0x3a, 0xe6}, {0xa0, 0x14, 0x3d}, {0xb0, 0x30, 0xc8},
+    {0x00, 0x1a, 0xf9}, {0x14, 0xdd, 0x48}, {0xec, 0x71, 0x5e}, {0x74, 0xb8, 0x0f},
+};
+static const size_t DRONE_OUI_COUNT = sizeof(DRONE_OUIS) / sizeof(DRONE_OUIS[0]);
+
 // One row per vendor table, so the index builder and the matcher below cannot
 // disagree about which tables exist -- adding a vendor means adding one row here
 // and nowhere else. Missing a table in the index builder would make
@@ -294,6 +382,9 @@ static const VendorOuiTable VENDOR_OUI_TABLES[] = {
     {VERKADA_OUIS, VERKADA_OUI_COUNT},
     {GENETEC_OUIS, GENETEC_OUI_COUNT},
     {AVIGILON_OUIS, AVIGILON_OUI_COUNT},
+    {UTILITY_OUIS, UTILITY_OUI_COUNT},
+    {DIGITALALLY_OUIS, DIGITALALLY_OUI_COUNT},
+    {DRONE_OUIS, DRONE_OUI_COUNT},
 };
 static const size_t VENDOR_OUI_TABLE_COUNT =
     sizeof(VENDOR_OUI_TABLES) / sizeof(VENDOR_OUI_TABLES[0]);
@@ -495,7 +586,9 @@ static bool parse_hexmac(const char* s, uint8_t out[6]) {
 // toggling promiscuous off during a BLE scan, then back on. flockcombo
 // interleaves a WiFi-promiscuous phase with a periodic BLE scan phase.
 static bool g_ble_inited = false;
+#if FLOCK_HAS_BLE
 static BLEScan* g_ble = nullptr;
+#endif
 static bool g_combo = false;
 static uint32_t g_phase_start = 0;
 #define COMBO_WIFI_MS 9000 // ~3 channel sweeps before a BLE scan (WiFi-biased)
@@ -847,6 +940,139 @@ static uint32_t ie_skeleton_hash(const uint8_t* p, int len) {
     return any ? h : 0;
 }
 
+// ---- Remote ID over WI-FI (ASTM F3411) -----------------------------------
+//
+// The BLE path in ble_do_scan() is not the whole story. ASTM F3411 defines FOUR
+// broadcast transports -- BLE legacy, BLE extended, Wi-Fi NAN and Wi-Fi Beacon --
+// and an aircraft is only required to implement one. DJI in particular favours
+// the beacon form, so a BLE-only receiver silently misses whole fleets while
+// looking like it is working.
+//
+// The beacon form is a vendor-specific IE (tag 0xDD) whose OUI is FA:0B:BC with
+// vendor type 0x0D, followed by a one-byte counter and then a MESSAGE PACK.
+// odid_parse_messages() app-side already handles packs, so once the IE is
+// located this is the same decode as BLE.
+//
+// Walks the IEs itself rather than reusing ie_skeleton_hash(): that one hashes
+// and discards, and its start offset is fixed at 24 for probe requests, whereas a
+// beacon's tagged parameters begin at 36 after the fixed body.
+#define ODID_WIFI_OUI_0 0xFA
+#define ODID_WIFI_OUI_1 0x0B
+#define ODID_WIFI_OUI_2 0xBC
+#define ODID_WIFI_TYPE  0x0D
+
+static const uint8_t* odid_find_wifi_ie(const uint8_t* p, int len, int tag_off, int* out_len) {
+    if(!p || !out_len || tag_off < 0) return NULL;
+    int off = tag_off;
+    while(off + 2 <= len) {
+        uint8_t tag = p[off];
+        uint8_t tlen = p[off + 1];
+        if(off + 2 + tlen > len) break; // truncated IE -> stop, trust nothing
+        if(tag == 0xDD && tlen >= 5 && p[off + 2] == ODID_WIFI_OUI_0 &&
+           p[off + 3] == ODID_WIFI_OUI_1 && p[off + 4] == ODID_WIFI_OUI_2 &&
+           p[off + 5] == ODID_WIFI_TYPE) {
+            // Skip the 3-byte OUI, the vendor type and the message counter; what
+            // is left is the message pack the app decodes.
+            int body = (int)tlen - 5;
+            if(body <= 0) return NULL;
+            *out_len = body;
+            return &p[off + 7];
+        }
+        off += 2 + tlen;
+    }
+    return NULL;
+}
+
+// ---- PROBE SURVEY --------------------------------------------------------
+//
+// WHY THIS EXISTS. Field reports (issue #25, and a drive of the maintainer's own)
+// show the same picture from different hardware: tens of thousands of management
+// frames captured, and ZERO candidates. 83,916 frames over 31 minutes past real
+// ALPR cameras, nothing scoring. The radio is fine; nothing in the air matched
+// any table we ship.
+//
+// The detector cannot explain that, because it only ever reports what it already
+// recognises. A camera on an OUI we do not know, or one that has moved to MAC
+// randomisation -- which this file's own comments warn "collapses the whole
+// OUI/SSID ladder" -- is indistinguishable from an empty street.
+//
+// So this records what is ACTUALLY there: every distinct transmitter sending
+// WILDCARD probe requests, matched or not, with its IE-skeleton fingerprint. Park
+// next to a camera you can see, and the row with a large count and a stable
+// fingerprint is the camera -- whatever its OUI turns out to be. That is how the
+// OUI table gets extended and how flock_ie_fps[] finally gets populated, which is
+// the designed answer to randomised MACs and currently ships empty.
+//
+// Wildcard probes only: a directed probe names a network the device already
+// knows, which is ordinary client behaviour and would bury the table in phones.
+// Phones still appear -- they scan too -- but a phone emits a burst and stops
+// while a camera probes every ~125 ms forever, so COUNT is the discriminator.
+//
+// Costs nothing when unused: rows are kept in RAM and only leave the board when
+// the app asks with `survey`. No extra UART traffic during normal detection.
+#define SURVEY_MAX 32
+typedef struct {
+    uint8_t mac[6];
+    uint32_t fp; /**< IE-skeleton hash; survives MAC randomisation */
+    int8_t rssi; /**< strongest seen -- closest approach */
+    uint8_t ch;
+    uint16_t count;
+    bool used;
+} SurveyRow;
+static SurveyRow g_survey[SURVEY_MAX];
+
+static void survey_note(const uint8_t* mac, uint32_t fp, int8_t rssi, uint8_t ch) {
+    int free_slot = -1, weakest = -1;
+    for(int i = 0; i < SURVEY_MAX; i++) {
+        if(!g_survey[i].used) {
+            if(free_slot < 0) free_slot = i;
+            continue;
+        }
+        if(memcmp(g_survey[i].mac, mac, 6) == 0) {
+            if(g_survey[i].count < 0xFFFF) g_survey[i].count++;
+            if(rssi > g_survey[i].rssi) g_survey[i].rssi = rssi; // closest approach
+            g_survey[i].ch = ch;
+            if(fp) g_survey[i].fp = fp;
+            return;
+        }
+        // Evict the LEAST seen, never the most: a persistent emitter is the one
+        // worth keeping, and it is the one a camera produces.
+        if(weakest < 0 || g_survey[i].count < g_survey[weakest].count) weakest = i;
+    }
+    int slot = (free_slot >= 0) ? free_slot : weakest;
+    if(slot < 0) return;
+    memset(&g_survey[slot], 0, sizeof(SurveyRow));
+    memcpy(g_survey[slot].mac, mac, 6);
+    g_survey[slot].fp = fp;
+    g_survey[slot].rssi = rssi;
+    g_survey[slot].ch = ch;
+    g_survey[slot].count = 1;
+    g_survey[slot].used = true;
+}
+
+/** Stream the survey to the app. One line per transmitter, strongest first. */
+static void survey_dump() {
+    Serial.print("SVBEGIN\n");
+    int n = 0;
+    for(int i = 0; i < SURVEY_MAX; i++) {
+        if(!g_survey[i].used) continue;
+        Serial.printf(
+            "SV,%02x%02x%02x%02x%02x%02x,%d,%u,%08lx,%u\n",
+            g_survey[i].mac[0],
+            g_survey[i].mac[1],
+            g_survey[i].mac[2],
+            g_survey[i].mac[3],
+            g_survey[i].mac[4],
+            g_survey[i].mac[5],
+            g_survey[i].rssi,
+            g_survey[i].ch,
+            (unsigned long)g_survey[i].fp,
+            (unsigned)g_survey[i].count);
+        n++;
+    }
+    Serial.printf("SVEND,%d\n", n);
+}
+
 // Sequence-number-run coalescer. A MAC-cycling Flock burst sprays many probes
 // from different (randomized) MACs but with a *contiguous* 802.11 sequence
 // number run -- the SoC's seq counter increments across the burst regardless of
@@ -987,6 +1213,40 @@ static void promisc_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
         }
     }
 
+    // REMOTE ID OVER WI-FI. Checked on beacons and probe responses, before the
+    // Flock scoring ladder and independently of it: an aircraft is not a camera
+    // and must not be scored as one. Same RID line as the BLE path, so the app
+    // decodes both with the one host-tested decoder.
+    if(subtype == 0x08 || subtype == 0x05) {
+        int rid_len = 0;
+        const uint8_t* rid = odid_find_wifi_ie(p, len, tag_off, &rid_len);
+        if(rid) {
+            if(rid_len > 64) rid_len = 64;
+            char rl[176];
+            size_t rp = snprintf(
+                rl,
+                sizeof(rl),
+                "RID,%02x%02x%02x%02x%02x%02x,%d,0d00",
+                p[10],
+                p[11],
+                p[12],
+                p[13],
+                p[14],
+                p[15],
+                pkt->rx_ctrl.rssi);
+            // The app's parser expects the BLE framing (application code then a
+            // counter) before the messages, so the two transports converge on one
+            // wire format and one decoder. Synthesised here rather than teaching
+            // the app a second shape.
+            for(int j = 0; j < rid_len && rp + 2 < sizeof(rl); j++) {
+                buf_appendf(rl, sizeof(rl), &rp, "%02x", rid[j]);
+            }
+            if(rp > sizeof(rl) - 1) rp = sizeof(rl) - 1;
+            rl[rp++] = '\n';
+            Serial.write((const uint8_t*)rl, rp);
+        }
+    }
+
     int s_score = ssid ? ssid_score(ssid, ssid_len) : 0;
     bool oui_tx = oui_match(p + 10); // addr2 = transmitter
     bool oui_rx = oui_match(p + 4); // addr1 = receiver (silent station)
@@ -1003,6 +1263,14 @@ static void promisc_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     // belongs to that someone else and says nothing about the receiver.
     // Counted for REPORTING ONLY -- see the note on probe_rate_bump(). This used
     // to gate the OUI+probe rungs below; it does not any more.
+    // SURVEY: record every wildcard-probe emitter, matched or not. Deliberately
+    // BEFORE the scoring ladder, because the whole point is to see the devices
+    // the ladder rejects -- a camera on an OUI we do not carry, or one using a
+    // randomised MAC, is invisible everywhere else.
+    if(is_probe && wildcard) {
+        survey_note(p + 10, ie_skeleton_hash(p, len), pkt->rx_ctrl.rssi, frame_channel);
+    }
+
     uint8_t probe_rate = 0;
     if(is_probe) probe_rate = probe_rate_bump(p + 10); // addr2 = transmitter
 
@@ -1152,8 +1420,36 @@ static void start_promisc() {
     set_channel(g_channel);
 }
 
+/**
+ * The companion's own BUILD version, distinct from the wire-protocol version.
+ *
+ * WHY BOTH. "FLOCKCO,1" is the PROTOCOL version -- it answers "can these two
+ * talk". It does not answer "which firmware is on this board", and until now
+ * nothing did: the only label a flashed companion had was the filename of the
+ * .bin somebody picked on the SD card, which cannot be verified after the fact
+ * and is routinely wrong. One card here held companion_forensic.bin,
+ * companion_gatefix.bin, companion_survey.bin and companion_ungated.bin -- none
+ * of which say which build they are -- alongside companion_v073/v077/v087, whose
+ * labels nobody can check.
+ *
+ * That is not cosmetic. A whole hardware validation session was run against a
+ * companion nobody could identify, and the app's CLAUDE.md carries a HARD RULE
+ * about the same failure on the Flipper side (redeploy after a version bump,
+ * because the .fap reports the old version while running the new code). This is
+ * that rule's missing half.
+ *
+ * MUST equal FAP_VERSION in application.fam: the two halves are built, flashed
+ * and tested as a pair, and a companion left over from a different release is
+ * precisely what this exists to expose. tools/check_oui_parity.py fails CI if
+ * they drift.
+ */
+#define FLOCK_COMPANION_VERSION "0.91"
+
 static void banner() {
-    Serial.print("FLOCKCO,1\n");
+    // Third field is the BUILD version. Appending is wire-safe: an older app
+    // splits this line with max=2, so esp_split_fields() glues "1,0.88" into one
+    // field and atoi() still reads 1 as the protocol version. It sees no change.
+    Serial.print("FLOCKCO,1," FLOCK_COMPANION_VERSION "\n");
     // What this chip actually is, so the app stops offering a classic ESP32's
     // pinout on every board. Sent as its own line rather than appended to the
     // banner: an older app ignores lines it does not know, but a changed banner
@@ -1238,6 +1534,15 @@ static void wifi_security_scan() {
 //   contains '=' so the Flipper tells it apart from mfghex. Older parsers ignore.
 //   sep=1: Apple Find My tracker was in separated-state payload form. This is
 //   an indicator only; the app still requires repeated sightings over distance.
+static void ble_action_emit(const char* op, const char* status, int rssi, bool have_rssi) {
+    if(have_rssi)
+        Serial.printf("ACT,%s,%s,%d\n", op, status, rssi);
+    else
+        Serial.printf("ACT,%s,%s\n", op, status);
+}
+
+#if FLOCK_HAS_BLE
+
 static void ble_ensure_init() {
     if(g_ble_inited) return;
     BLEDevice::init("");
@@ -1254,6 +1559,52 @@ static void ble_ensure_init() {
 // Flock OUI on the BLE address; plus validated AirTag/Tile/SmartTag. Emits
 // BBEGIN/BLE/BEND. Weak tracker adverts below BLE_TRACKER_MIN_RSSI are omitted:
 // they are not useful evidence that a tag is travelling with the operator.
+// Defined further down with the BLE action helpers, but needed by the Raven GATT
+// check below: it iterates EVERY advertised service UUID, which is the whole
+// point -- the singular accessor missed Ravens that list 0x3100 second.
+static bool ble_action_has_service(BLEAdvertisedDevice& d, const char* token);
+
+// "FS-" + EXACTLY six hex digits and nothing else -- Flock's post-"Penguin" unit
+// id. Mirrors is_fs_unit_name() in helpers/flock_ble.c byte for byte.
+//
+// Shaped rather than a bare "FS-" prefix on purpose: two letters and a dash is
+// not evidence, and this classification reaches the app as cat=1, which its BLE
+// path can only score Confirmed or Possible -- there is no Likely rung to demote
+// into. Same reasoning that keeps a loose "flock" substring off this path.
+static bool ble_name_is_fs_unit(const std::string& nm) {
+    if(nm.size() != 9) return false;
+    if(!((nm[0] == 'F' || nm[0] == 'f') && (nm[1] == 'S' || nm[1] == 's') && nm[2] == '-')) {
+        return false;
+    }
+    for(size_t i = 3; i < 9; i++) {
+        if(!isxdigit((unsigned char)nm[i])) return false;
+    }
+    return true;
+}
+
+
+/**
+ * True if the raw advertising payload contains the ASCII tag "BWCDEVICE".
+ *
+ * Axon body-worn cameras carry this in their BLE service data. It is a
+ * MAC-INDEPENDENT, positive identification of a body camera specifically, rather
+ * than "some device on Axon's OUI" -- which is all a prefix match can ever say,
+ * and which is worth much less now that address randomisation is routine.
+ *
+ * Searched across the WHOLE payload rather than inside a parsed service-data
+ * element on purpose. The tag is a fixed nine-byte ASCII string with no ordinary
+ * meaning, so a substring hit is already specific; parsing the exact element
+ * would add a second thing to get wrong for no gain in precision. It is scored
+ * app-side, where it can be weighed against the OUI rather than replacing it.
+ *
+ * Corroboration: field-validated 2026-07-19 by soyboi1312/all-cameras-are-beacons,
+ * which scores it 90 against 75 for the bare Axon OUI. We hold 00:25:df already;
+ * this is the tell that says WHAT the device is.
+ */
+static bool ble_str_has_bwc(const std::string& s) {
+    return s.find("BWCDEVICE") != std::string::npos;
+}
+
 static void ble_do_scan(int seconds) {
     ble_ensure_init();
     esp_wifi_set_promiscuous(false);
@@ -1325,14 +1676,36 @@ static void ble_do_scan(int seconds) {
         }
         if(cat != 1 && d.haveName()) {
             std::string nm = fstr(d.getName());
-            if(nm.rfind("Penguin", 0) == 0 || nm.find("FS Ext") != std::string::npos)
-                cat = 1; // Flock Penguin battery / FS external battery
+            // MUST stay in step with flock_ble_name_is_flock() in
+            // helpers/flock_ble.c, which is where the app re-derives confidence.
+            // Anything this side misses reaches the Flipper as cat=0 and is never
+            // reconsidered, so a name only the app knows about is a name that
+            // finds nothing.
+            if(nm.rfind("Penguin", 0) == 0 || nm.find("FS Ext") != std::string::npos ||
+               nm.rfind("Pigvision", 0) == 0 || nm.rfind("FlockCam", 0) == 0 ||
+               nm.rfind("RWLS-", 0) == 0 || ble_name_is_fs_unit(nm))
+                cat = 1; // Flock Penguin battery / FS external battery / field-observed names
         }
         if(d.haveServiceUUID()) {
             std::string u = fstr(d.getServiceUUID().toString());
-            if(u.find("00003100") != std::string::npos || u.find("00003200") != std::string::npos ||
-               u.find("00003300") != std::string::npos || u.find("00003400") != std::string::npos ||
-               u.find("00003500") != std::string::npos) {
+            // RAVEN GATT: check EVERY advertised service UUID, not just the first.
+            //
+            // This used to read only getServiceUUID() -- the singular accessor,
+            // index 0 -- so a Raven advertising 0x3100 anywhere but first was
+            // missed outright: no cat=1, no rv=1, no detection, no alert. A
+            // silent recall hole against real hardware, and the one bug in this
+            // sweep that costs whole devices rather than a rung.
+            //
+            // ble_action_has_service() below already iterates the full list with
+            // the same substring semantics, and is already compiling on both core
+            // 2.0.x and 3.x, so the multi-UUID API is proven available. Substring
+            // matching is kept exactly as it was: anchoring would be a recall
+            // change, which is out of scope here.
+            if(ble_action_has_service(d, "00003100") ||
+               ble_action_has_service(d, "00003200") ||
+               ble_action_has_service(d, "00003300") ||
+               ble_action_has_service(d, "00003400") ||
+               ble_action_has_service(d, "00003500")) {
                 cat = 1; // Raven custom GATT services
                 raven = true; // Raven-specific GATT -> positive acoustic-sensor ID
             }
@@ -1346,6 +1719,37 @@ static void ble_do_scan(int seconds) {
                     (u.find("fd44") != std::string::npos || u.find("fcb2") != std::string::npos))
                 cat = BLE_TRACKER_CAT_AIRTAG; // Apple/DULT Find My accessory service
         }
+        // AXON BODY-WORN CAMERA, by its own service-data tag rather than by a
+        // MAC prefix. Checked before the Flock-OUI fallback below so a body cam
+        // is never mislabelled as a camera: cat=7 is Axon, cat=1 is Flock, and
+        // announcing one as the other is the over-claim the class enum exists to
+        // prevent. Emitted as bwc=1 so the app can tell "Axon OUI" from "an Axon
+        // body camera said so".
+        // Same dangling-getPayload() trap as the Remote ID block below: search
+        // the COPIED service-data and manufacturer-data strings instead.
+        bool bwc = false;
+        {
+            int nsd = d.getServiceDataCount();
+            for(int si = 0; si < nsd && !bwc; si++) {
+                std::string sd = fstr(d.getServiceData(si));
+                if(ble_str_has_bwc(sd)) bwc = true;
+            }
+            if(!bwc && d.haveManufacturerData()) {
+                bwc = ble_str_has_bwc(fstr(d.getManufacturerData()));
+            }
+        }
+        if(bwc) cat = 7;
+        // Utility, Inc "BodyWorn" cameras name themselves in the advert. A NAME
+        // tell, so it survives MAC randomisation the way the OUI table cannot.
+        // Lands in the same body-worn class; the VENDOR is re-derived app-side
+        // from the OUI, so a Utility unit on a Utility block reads "Utility
+        // BodyWorn" and one on a randomised address reads the honest generic
+        // "Body/in-car kit" rather than claiming Axon.
+        if(cat == 0 && d.haveName()) {
+            std::string nm = fstr(d.getName());
+            if(nm.find("BodyWorn Remote") != std::string::npos) cat = 7;
+        }
+
         if(cat == 0) {
             BLEAddress ba = d.getAddress();
             const uint8_t* nat = fble_addr_bytes(ba); // shape differs 2.x vs 3.x
@@ -1373,6 +1777,58 @@ static void ble_do_scan(int seconds) {
         }
         addr[k] = 0;
 
+        // REMOTE ID (ASTM F3411). Emitted as its own line, BEFORE the BLE line
+        // and independently of `cat`, because an aircraft is not a Flock device
+        // and must not be filed as one. The bytes go across verbatim as hex; all
+        // decoding is app-side in helpers/open_drone_id.c.
+        //
+        // This is the only detection path that reaches the drones a US police
+        // department actually flies. Checked against the IEEE registry
+        // 2026-09-07: of Skydio, BRINC, Aerodome, Flock and Paladin, only Skydio
+        // holds a block at all -- so for three of the five there is no MAC prefix
+        // to match, ever. Remote ID is a legal broadcast mandate, so it works
+        // regardless of vendor, and it carries the OPERATOR's position.
+        //
+        // USES THE PARSED SERVICE-DATA ACCESSORS, NOT getPayload().
+        //
+        // getPayload() looks like the obvious way to do this and is a TRAP:
+        // BLEAdvertisedDevice::parseAdvertisement() stores `m_payload = payload`,
+        // a bare POINTER into the ESP-IDF GAP event buffer, and never copies it.
+        // We iterate results AFTER the scan has finished, by which time that
+        // buffer is long gone -- so getPayload() is a dangling pointer and the
+        // walk reads whatever now occupies that memory. Names and manufacturer
+        // data survive only because those ARE copied into std::string members.
+        // getServiceData(i) is likewise a real copy, so it stays valid here.
+        //
+        // Cost of learning that: the emitter transmitted a byte-perfect Remote ID
+        // advert, the decoder parsed those exact captured bytes correctly in a
+        // host test, and the drone still never appeared on the device.
+        {
+            int nsd = d.getServiceDataCount();
+            for(int si = 0; si < nsd; si++) {
+                std::string u = fstr(d.getServiceDataUUID(si).toString());
+                // 16-bit 0xFFFA renders inside the full 128-bit form.
+                if(u.find("fffa") == std::string::npos && u.find("FFFA") == std::string::npos) {
+                    continue;
+                }
+                // The library strips the 2-byte UUID, so this already begins at
+                // the ODID application code -- exactly what the app's decoder
+                // expects to be handed.
+                std::string sd = fstr(d.getServiceData(si));
+                if(sd.size() < 2 || (uint8_t)sd[0] != 0x0D) continue;
+                size_t sd_len = sd.size() > 64 ? 64 : sd.size();
+                char rid[176];
+                size_t rp = snprintf(rid, sizeof(rid), "RID,%s,%d,", addr, rssi);
+                for(size_t k = 0; k < sd_len && rp + 2 < sizeof(rid); k++) {
+                    buf_appendf(rid, sizeof(rid), &rp, "%02x", (uint8_t)sd[k]);
+                }
+                if(rp > sizeof(rid) - 1) rp = sizeof(rid) - 1;
+                rid[rp++] = '\n';
+                Serial.write((const uint8_t*)rid, rp);
+                break;
+            }
+        }
+
         // One buffer + single write (same rationale as the D-line) so the multi-field
         // BLE line is emitted atomically.
         char line[176];
@@ -1385,7 +1841,24 @@ static void ble_do_scan(int seconds) {
         // Trailing field: raw mfg-data hex for Flock (0x09C8) only, so the
         // Flipper can decode the device serial. Capped so the line stays well
         // under the Flipper's RX line limit; only Flock units carry it.
-        if(cat == 1 && company == 0x09C8 && d.haveManufacturerData()) {
+        // Widened from `company == 0x09C8` to ANY cat=1 device carrying
+        // manufacturer data. A unit that reached cat=1 by Penguin naming, Raven
+        // GATT or a Flock OUI while advertising under some other id previously
+        // sent ZERO mfg bytes, so its serial could never be decoded and the app
+        // had nothing to show.
+        //
+        // LINE BUDGET (char line[176], now the longest line the protocol emits):
+        //   "BLE," 4 + addr 12 + "," + rssi <=4 + "," + cat 1 + "," + company <=6
+        //   + ","                                              ~= 27
+        //   escaped name, capped at 32 by buf_append_escaped, <=64 worst case
+        //   "," + 62 hex chars (31-byte cap)                    = 63
+        //   ",rv=1" 5 + ",sep=1" 6 + "\n" 1                     = 12
+        //   -> 166 of 176. Fits, and buf_appendf clamps regardless.
+        //
+        // Wire shape is unchanged, so an older app still parses it: esp_parser.c
+        // splits trailers on the presence of '=', and a foreign payload simply
+        // lands in mfg[] and yields no serial. No ESP_PROTO_VERSION bump.
+        if(cat == 1 && d.haveManufacturerData()) {
             std::string md = fstr(d.getManufacturerData());
             if(pos + 1 < sizeof(line)) line[pos++] = ',';
             for(size_t j = 0; j < md.length() && j < 31 && pos + 2 < sizeof(line); j++) {
@@ -1400,6 +1873,12 @@ static void ble_do_scan(int seconds) {
         }
         if(tracker_separated && pos + 6 < sizeof(line)) {
             memcpy(line + pos, ",sep=1", 6);
+            pos += 6;
+        }
+        // Axon BWCDEVICE tag. Same '=' trailer convention as rv=/sep=, so an
+        // older app ignores it rather than mis-parsing the line.
+        if(bwc && pos + 6 < sizeof(line)) {
+            memcpy(line + pos, ",bwc=1", 6);
             pos += 6;
         }
         if(pos > sizeof(line) - 1) pos = sizeof(line) - 1;
@@ -1462,13 +1941,6 @@ static void ble_locate_scan() {
 
 static volatile bool g_ring_response_ready = false;
 static volatile uint16_t g_ring_response_status = 0xFFFF;
-
-static void ble_action_emit(const char* op, const char* status, int rssi, bool have_rssi) {
-    if(have_rssi)
-        Serial.printf("ACT,%s,%s,%d\n", op, status, rssi);
-    else
-        Serial.printf("ACT,%s,%s\n", op, status);
-}
 
 static void ble_action_restore_radio() {
     g_ble->clearResults();
@@ -1715,6 +2187,29 @@ static void ble_action_ring(const char* wanted) {
     ble_action_emit("RING", wrote ? status : "service_missing", rssi, true);
     ble_action_restore_radio();
 }
+
+#else // FLOCK_HAS_BLE == 0
+
+// Wi-Fi-only target (ESP32-S2 and friends). No Bluetooth radio exists, so these
+// stand in as no-ops rather than missing symbols, which keeps loop() and the
+// command dispatcher byte-identical across targets instead of threading #ifs
+// through both. The ACT replies still ANSWER: a Flipper left waiting on a reply
+// that can never arrive is worse than one told plainly the board cannot do it.
+static void ble_do_scan(int seconds) {
+    (void)seconds;
+}
+static void ble_locate_scan() {
+}
+static void ble_action_ping(const char* wanted) {
+    (void)wanted;
+    ble_action_emit("PING", "noble", -127, false);
+}
+static void ble_action_ring(const char* wanted) {
+    (void)wanted;
+    ble_action_emit("RING", "noble", -127, false);
+}
+
+#endif // FLOCK_HAS_BLE
 
 // ---- optional GPS relay (FlipDeFlock issue #5) ---------------------------
 //
@@ -1968,7 +2463,28 @@ void setup() {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    // WIFI_MODE_NULL is the classic-ESP32 idiom for a promiscuous sniffer and is
+    // left exactly as it was on that target -- it is field-proven there and this
+    // is not the place to experiment.
+    //
+    // CANDIDATE FIX FOR THE ESP32-S2, UNVERIFIED ON HARDWARE. Reported in issue
+    // #25: an S2 (the official Flipper Wi-Fi Devboard v1) running the Wi-Fi-only
+    // build comes up looking perfectly healthy -- banner fine, channel counting,
+    // no errors -- and detects nothing at all across ten-plus minutes past
+    // ten-plus cameras, on a board proven good because Marauder scans and logs on
+    // it. A promiscuous RX callback that never fires produces exactly that
+    // picture, and NULL-mode promiscuous is not guaranteed to deliver packets on
+    // the S2 the way it does on the classic part. STA mode is the portable form.
+    //
+    // Gated to the S2 alone so the classic image is byte-identical and cannot
+    // regress for anyone currently working. Nobody on this project has an S2, so
+    // this ships as a nightly for the reporter to test, not as a release, and it
+    // is a hypothesis until his diag.csv shows esp_frames climbing.
+#if defined(CONFIG_IDF_TARGET_ESP32S2)
+    esp_wifi_set_mode(WIFI_MODE_STA);
+#else
     esp_wifi_set_mode(WIFI_MODE_NULL);
+#endif
     esp_wifi_start();
 #if FLOCK_HAS_5GHZ
     // AUTO = 2.4 + 5. Must be set before hopping: with the default 2.4-only mode
@@ -2064,6 +2580,47 @@ static void handle_command(String cmd) {
         g_scanning = true;
         g_combo = true; // interleaved WiFi + BLE Flock detection
         g_phase_start = millis();
+    } else if(cmd == "survey") {
+        // Dump on request only, so a survey costs nothing until someone asks.
+        survey_dump();
+    } else if(cmd == "surveyclear") {
+        memset(g_survey, 0, sizeof(g_survey));
+        Serial.print("SVEND,0\n");
+    } else if(cmd == "bootloader") {
+        // ENTER UART DOWNLOAD MODE IN SOFTWARE, so reflashing needs no hands.
+        //
+        // WHY. On a board with no USB port and no auto-reset circuit -- the
+        // ReksLab Tri-Board, the CaracalDB multi-boards -- IO0 and EN are on
+        // buttons wired to nothing the Flipper can drive, so every reflash needs
+        // a human to hold BOOT and tap RESET at the right moment. Confirmed on
+        // the bench 2026-09-07: the flasher reports "no sync" on all five
+        // attempts without it.
+        //
+        // WORKS ON S2 / S3 / C3 ONLY, AND THAT IS A HARDWARE FACT. Those ROMs
+        // read RTC_CNTL_OPTION1_REG's FORCE_DOWNLOAD_BOOT bit, which survives a
+        // software reset and selects download mode regardless of the strapping
+        // pins. THE CLASSIC ESP32 HAS NO SUCH BIT -- checked against the 2.0.17
+        // SDK headers, where RTC_CNTL_OPTION1_REG does not exist for esp32 at
+        // all, only for esp32s2/s3/c3. Its ROM decides boot mode purely from GPIO0
+        // latched at reset, so on a classic part there is no software route and
+        // the manual hold is the only way. Say so instead of pretending.
+        //
+        // ONE-WAY ON PURPOSE where it does work: the bit is cleared by a power
+        // cycle, so a board that lands here by accident is recovered by
+        // unplugging it. There is no way back in software -- once the ROM loader
+        // owns the UART this firmware is no longer running.
+#if defined(RTC_CNTL_OPTION1_REG) && defined(RTC_CNTL_FORCE_DOWNLOAD_BOOT)
+        Serial.print("ACT,BOOTLOADER,1\n");
+        Serial.flush();
+        delay(50); // let the ack reach the Flipper before the UART goes away
+        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+        esp_restart();
+#else
+        // Classic ESP32. Reported as an explicit "cannot", so the app can tell
+        // "this chip has no software path" from "the command was ignored by old
+        // firmware" -- two situations that look identical from the other end.
+        Serial.print("ACT,BOOTLOADER,0\n");
+#endif
     } else if(cmd == "flockwifi") {
         g_combo = false;
     } else if(cmd.startsWith("ch ")) {

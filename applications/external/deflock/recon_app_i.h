@@ -12,6 +12,7 @@
 #include <gui/modules/variable_item_list.h>
 #include <gui/modules/widget.h>
 #include <gui/modules/popup.h>
+#include <gui/modules/text_input.h>
 #include <notification/notification.h>
 #include <notification/notification_messages.h>
 #include <storage/storage.h>
@@ -20,6 +21,7 @@
 #include "helpers/alerts.h"
 #include "helpers/detect_rules.h" // AlertConfChoice for the settings scene
 #include "helpers/flock_db.h"
+#include "helpers/flock_store.h"
 #include "helpers/flock_ble.h"
 #include "views/flock_view.h"
 #include "views/flock_detail_view.h"
@@ -65,6 +67,18 @@ typedef enum {
 #define RECON_REPORT_FOLDER RECON_APP_FOLDER "/reports"
 #define RECON_SETTINGS_PATH RECON_APP_FOLDER "/settings.txt"
 #define RECON_HITS_PATH     RECON_APP_FOLDER "/hits.csv"
+// One appended row per scan session. Exists because a drive that finds nothing
+// is INDISTINGUISHABLE from a companion that never scanned, an app that rejected
+// everything, and a road with no cameras on it -- all four render as an empty
+// list, and every counter that could tell them apart was live-only and died with
+// the session. v0.79-v0.83 shipped without this and cost two operators a drive.
+#define RECON_DIAG_PATH     RECON_APP_FOLDER "/diag.csv"
+// Every wildcard-probe transmitter seen during a session, MATCHED OR NOT.
+// Exists because "83,916 frames, zero candidates" is the one result the detector
+// cannot explain: a camera on an OUI we do not carry, or one using a randomised
+// MAC, looks exactly like an empty street. Park next to a camera you can see and
+// the row with a huge count is it, whatever its OUI turns out to be.
+#define RECON_SURVEY_PATH   RECON_APP_FOLDER "/survey.csv"
 
 /** ViewDispatcher view indexes. */
 typedef enum {
@@ -77,6 +91,7 @@ typedef enum {
     ReconViewFlockMap,
     ReconViewDeflockQr,
     ReconViewLocator,
+    ReconViewTextInput,
 } ReconView;
 
 /** ESP32 link backend / parsing strategy. */
@@ -181,6 +196,29 @@ typedef enum {
     ReconEspBandCount,
 } ReconEspBand;
 
+/**
+ * One wildcard-probe transmitter observed, WHETHER OR NOT it matched a table.
+ *
+ * The detector only ever reports what it already recognises, so "83,916 frames,
+ * zero candidates" -- the result two operators independently got next to real
+ * cameras -- is indistinguishable from an empty street. This records what was
+ * actually in the air, so a camera on an OUI we do not carry, or one using a
+ * randomised MAC, becomes visible instead of silently absent.
+ *
+ * `fp` is the IE-skeleton hash: MAC-independent, so it survives randomisation and
+ * is the thing that can populate flock_ie_fps[], which ships empty today.
+ * `count` is the discriminator -- a camera probes every ~125 ms forever, a phone
+ * emits a burst and goes quiet.
+ */
+typedef struct {
+    uint8_t mac[6];
+    uint32_t fp;
+    int8_t rssi; /**< strongest seen -- closest approach */
+    uint8_t channel;
+    uint16_t count;
+} SurveyEntry;
+#define RECON_SURVEY_MAX 48
+
 typedef struct {
     EspBackend backend;
     uint8_t esp_band; /**< ReconEspBand: which band(s) the companion sweeps */
@@ -195,13 +233,15 @@ typedef struct {
                            *  specific -- there is no standard, so it is a setting
                            *  rather than a guess. */
     bool sound;
-    uint8_t alert_mode; /**< ReconAlertMode: beep/vibro on a new Flock hit (default Vibrate) */
+    uint8_t alert_mode; /**< ReconAlertMode: beep/vibro on a new Flock hit (default Beep+Vibe) */
     uint8_t alert_min_conf; /**< AlertConfChoice: lowest rung that may alert (default Likely) */
     bool flash_fast; /**< raise the flash (write) baud to 230400 after connect */
     bool esp_auto_5v; /**< power the GPIO 5V rail if the companion never answers.
                         *  Default ON. See recon_app_esp_power_tick(). */
-    bool save_hits; /**< persist detections to hits.csv across app restarts (default OFF:
-                      *   it is a durable record of where you have been) */
+    bool save_hits; /**< persist detections to hits.csv across app restarts (default ON;
+                      *   turning it off deletes the file) */
+    bool card_autodismiss; /**< hit card clears itself after CARD_MS (default ON). Off =
+                             *  it stays until the NEXT hit replaces it. */
     bool log_serials; /**< log Flock device serials to saved reports (default OFF) */
 } ReconSettings;
 
@@ -228,8 +268,21 @@ typedef struct {
                          *   sensor. What it is, as opposed to how sure we are. */
     bool hidden; /**< beacons but withholds its SSID. An OBSERVATION shown to the
                    *   operator, never a confidence input -- see esp_parser.c. */
+    uint8_t ble_tell; /**< FlockBleTell: WHICH BLE signal classified this (mfg id
+                        *   vs Raven GATT vs naming vs a shared OUI). Display only
+                        *   -- never a confidence input. LIVE-SESSION ONLY: it is
+                        *   not in the hits.csv schema, so a row restored from the
+                        *   card reads back as FlockBleTellNone and the detail
+                        *   screen falls back to the generic "BLE". */
     int8_t geotag_rssi; /**< rssi when the geotag was last set (hysteresis) */
     bool marked; /**< user flagged this for the report */
+    bool confirmed; /**< the operator SAW this device with their own eyes. Ground
+                      *   truth, and the only thing in the table that is not an
+                      *   inference -- it is what promotes a candidate fingerprint. */
+    char label[FLOCK_STORE_LABEL_LEN]; /**< the operator's own name for it. Kept
+                                         *   SEPARATE from ssid on purpose: what was
+                                         *   observed on the air and what the operator
+                                         *   calls it are different facts. */
     bool alerted; /**< the detection alert has already fired for this device (latch) */
     bool archived; /**< restored from hits.csv, not seen yet this session. first_tick/
                      *   last_tick are 0 and MEANINGLESS -- never age-test an archived
@@ -244,6 +297,30 @@ typedef struct {
     uint32_t first_tick;
     uint32_t last_tick;
     uint32_t seen_epoch; /**< RTC Unix seconds at the last sighting, 0 if never stored */
+
+    /* ---- ASTM F3411 Remote ID (FlockClassDrone only) --------------------- */
+    /**
+     * The OPERATOR's position, straight out of the aircraft's own System
+     * message. NAN until one arrives.
+     *
+     * The single most actionable field in the app. Everything else FlipDeFlock
+     * finds is fixed infrastructure you can walk away from; a drone follows you,
+     * and this says where the person flying it is standing. It is broadcast in
+     * the clear because federal law requires it.
+     */
+    float op_lat, op_lon;
+    uint8_t ua_type; /**< OdidUaType -- multirotor, fixed wing, ... */
+    /**
+     * lat/lon came from the aircraft's OWN Remote ID broadcast rather than from
+     * our geotag of where we were standing when we heard it.
+     *
+     * These are not the same claim and must not be shown as one. A geotag says
+     * "the observer was here"; a Remote ID position says "the aircraft was
+     * there", to GPS accuracy, possibly hundreds of metres away and a few hundred
+     * feet up. Merging them silently would put a marker on the map that means
+     * whichever one happened to arrive last.
+     */
+    bool pos_broadcast;
 } FlockEntry;
 
 /** One access point seen by the WiFi security scan (companion firmware). */
@@ -299,6 +376,7 @@ typedef struct {
     VariableItemList* var_item_list;
     Widget* widget;
     Popup* popup;
+    TextInput* text_input;
     FlockView* flock_view;
     FlockDetailView* flock_detail_view;
     FlockMapView* flock_map_view;
@@ -306,6 +384,20 @@ typedef struct {
     LocatorView* locator_view;
 
     ReconSettings settings;
+
+    /* hits.csv autosave. Detections used to reach the card only via
+     * scan_session_stop(), so a battery death mid-scan lost everything collected
+     * since the scan began -- reported from a real drive. The worker sets
+     * hits_dirty on every new/updated detection; the GUI tick flushes on an
+     * interval. Not a setting: there is no reason to want crash loss. */
+    /* Hit action menu (hold OK on a row). Table index of the device the menu and
+     * the rename screen act on, captured when the menu opens so a detection
+     * landing mid-edit cannot redirect it at a different camera. */
+    int hit_menu_idx;
+    char rename_buf[FLOCK_STORE_LABEL_LEN];
+
+    bool hits_dirty;
+    uint32_t hits_last_save; /**< furi tick of the last successful flush */
 
     EspLink* esp;
     GpsLink* gps;
@@ -357,6 +449,8 @@ typedef struct {
     // What the companion reported about itself (CHIP/BAND). Zeroed = not heard
     // yet, in which case the app must not claim to know the board's pinout.
     char esp_chip[12]; /**< IDF target name, "" until a CHIP line arrives */
+    /* NOTE: a BLE-less companion (see recon_esp_chip_has_no_ble) is reported
+     * here and nowhere else, which is why the header keys off this field. */
     uint8_t esp_gpio_count;
     uint64_t esp_gps_pin_mask; /**< bit N = GPIO N can carry a GPS on THIS chip */
     bool esp_has_5ghz;
@@ -426,6 +520,35 @@ typedef struct {
                             *  long drives as a cosmetic annoyance, when it was the ESP
                             *  resetting and dropping detections. */
     uint8_t esp_proto_version; /**< companion wire-protocol version (FLOCKCO banner; 0 = unknown) */
+    /**
+     * The companion's BUILD version from the FLOCKCO banner, "" if the firmware
+     * predates it (anything before v0.88).
+     *
+     * The answer to "which firmware is actually on the board", which nothing
+     * could answer before. Filenames on the SD card were the only label and they
+     * cannot be verified after flashing -- a card here carried
+     * companion_forensic/gatefix/survey/ungated .bin files that say nothing at
+     * all, and companion_v073/v077/v087 whose labels nobody can check. Shown on
+     * the ESP32 Firmware screen and written into diag.csv, so a field report says
+     * which pair produced it.
+     */
+    char esp_build[12];
+
+    /* ---- session diagnostics (see RECON_DIAG_PATH) ----------------------
+     * Counted app-side so they can be compared against the companion's OWN
+     * frames/hits totals. The comparison is the whole point: companion hits
+     * climbing while `diag_accepted` stays flat means the app is dropping
+     * detections; both flat means nothing was ever heard. */
+    uint32_t diag_flock_msgs; /**< detection reports handed to report_flock */
+    uint32_t diag_accepted; /**< of those, the ones that reached the table */
+    uint32_t diag_rej_conf; /**< dropped: scored FlockConfidenceNone */
+    uint32_t diag_rej_full; /**< dropped: table full and nothing evictable */
+    uint32_t diag_start_epoch; /**< wall clock at scan_session_start */
+
+    /* ---- probe survey (see RECON_SURVEY_PATH) --------------------------- */
+    SurveyEntry survey[RECON_SURVEY_MAX];
+    size_t survey_count;
+    uint32_t survey_last_poll; /**< tick of the last `survey` request */
     bool esp_proto_mismatch; /**< companion speaks a different protocol version than the app */
     uint32_t esp_dropped_lines; /**< overlong RX lines dropped whole (wire-protocol health metric) */
     uint8_t esp_link_state; /**< EspLinkState: Stopped / Running / PortBusy (R6 error surface) */
@@ -481,6 +604,16 @@ typedef struct {
     volatile bool fw_running;
     volatile bool fw_ok;
     volatile bool fw_log_dirty; /**< log changed -> re-render */
+    /**
+     * Flash/backup progress, 0..100, or -1 when no transfer is running.
+     *
+     * Kept OUT of fw_log because a percentage REPLACES itself rather than
+     * accumulating. Logging it appended a line per step, so the operator had to
+     * scroll a text box to find the current figure -- on a 128x64 screen, during
+     * the one operation they cannot walk away from.
+     */
+    volatile int fw_pct;
+    char fw_status[40]; /**< current flasher action, shown above the progress bar */
 
     char text_store[RECON_TEXT_STORE];
 } ReconApp;
@@ -505,6 +638,28 @@ void recon_app_report_flock(
     FlockDevClass dev_class,
     bool hidden);
 
+/**
+ * Record/merge an ASTM F3411 Remote ID broadcast from an unmanned aircraft.
+ *
+ * SEPARATE FROM recon_app_report_flock() rather than more parameters on it: the
+ * evidence is a different kind. A Flock detection is an inference from a MAC
+ * prefix and some frame behaviour; this is the aircraft stating its own
+ * registration and its own coordinates because the law says it must. It also
+ * carries a field nothing else has -- the operator's position.
+ *
+ * `payload` is the raw BLE service data starting at the 0x0D application code,
+ * exactly as the companion forwarded it. Decoded here, via the host-tested
+ * helpers/open_drone_id.c, rather than on the companion.
+ *
+ * Thread-safe (takes app->mutex internally); called from the ESP worker thread.
+ */
+void recon_app_report_remote_id(
+    ReconApp* app,
+    const uint8_t addr[6],
+    int8_t rssi,
+    const uint8_t* payload,
+    size_t payload_len);
+
 /** Update the cached ESP status line (thread-safe). */
 void recon_app_set_esp_status(
     ReconApp* app,
@@ -523,7 +678,57 @@ void recon_app_set_esp_lines(ReconApp* app, uint32_t lines);
 void recon_app_set_esp_proto(ReconApp* app, uint8_t version, bool mismatch);
 
 /** Update the count of overlong RX lines dropped whole (health metric; thread-safe). */
+/**
+ * True for companion SoCs with NO Bluetooth radio at all -- currently the
+ * ESP32-S2, which is the chip on the official Flipper Wi-Fi Devboard.
+ *
+ * Such a board runs the Wi-Fi half of detection only and can never see the BLE
+ * half, no matter what firmware it is given. The operator has to be told, because
+ * "found nothing" from a board that cannot hear half the signals is a materially
+ * weaker statement than the same words from one that can -- and indistinguishable
+ * on screen unless we say so.
+ *
+ * @param target  the IDF target name from the companion's CHIP line.
+ */
+static inline bool recon_esp_chip_has_no_ble(const char* target) {
+    return target && target[0] && strcmp(target, "esp32s2") == 0;
+}
+
+/**
+ * Record WHICH BLE signal classified the device at @p mac (a FlockBleTell).
+ *
+ * Separate from recon_app_report_flock() rather than another parameter on it:
+ * this is BLE-only evidence and the WiFi callers have nothing to say about it.
+ * Display only -- it never feeds a confidence rung.
+ */
+void recon_app_set_ble_tell(ReconApp* app, const uint8_t mac[6], uint8_t tell);
+
+/** Record one surveyed wildcard-probe transmitter (see RECON_SURVEY_PATH). */
+void recon_app_survey_add(
+    ReconApp* app,
+    const uint8_t mac[6],
+    uint32_t fp,
+    int8_t rssi,
+    uint8_t channel,
+    uint16_t count);
+
+/** Write survey.csv. Counts and signatures only -- no SSID, no position. */
+void recon_survey_save(ReconApp* app);
+
+/** Ask the companion for its survey on an interval (see RECON_SURVEY_PATH). */
+void recon_survey_tick(ReconApp* app);
+
 void recon_app_set_esp_dropped(ReconApp* app, uint32_t dropped);
+
+/** Zero the per-session diagnostic counters and stamp the start time. */
+void recon_diag_begin(ReconApp* app);
+
+/** Append this session's diagnostic row. Always written, even with save_hits
+ *  off: it records COUNTS, never a MAC, an SSID or a position, so it carries no
+ *  record of where you have been. That is why it is not behind the privacy
+ *  toggle -- the toggle exists to stop logging places, not to stop logging
+ *  whether the hardware worked. */
+void recon_diag_save(ReconApp* app);
 
 /** Update the queryable ESP-link state (thread-safe). See EspLinkState. */
 void recon_app_set_esp_link_state(ReconApp* app, EspLinkState state);
@@ -655,4 +860,8 @@ void recon_hits_clear(ReconApp* app);
  * every scan-session exit, and folding this removal into it turned Net
  * Guardian's baseline reset into permanent data loss (issue #5).
  */
+/** Flush hits.csv on an interval while a scan runs, so a flat battery cannot
+ *  take the whole session with it. No-op when Save hits is off. */
+void recon_hits_autosave_tick(ReconApp* app);
+
 void recon_hits_save_after_delete(ReconApp* app);
