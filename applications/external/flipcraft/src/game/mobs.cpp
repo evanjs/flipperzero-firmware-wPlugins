@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #include "game.h"
 #include <algorithm>
 
@@ -179,11 +180,13 @@ void Game::explodeAt(int cx, int cy, int cz) {
     if(std::abs(playerX + PLAYERHALFWIDTH - ex) < MOB_BLAST_RANGE &&
        std::abs(playerZ + PLAYERHALFWIDTH - ez) < MOB_BLAST_RANGE &&
        std::abs(playerY + PLAYERHEIGHT / 2 - ey) < MOB_BLAST_RANGE) {
-        int hp = (int)pl.health - MOB_BLAST_DMG;
-        if(hp <= 0)
-            gameOverPending = true;
-        else
-            pl.health = u8(hp);
+        if(!world.creative()) {
+            int hp = (int)pl.health - MOB_BLAST_DMG;
+            if(hp <= 0)
+                gameOverPending = true;
+            else
+                pl.health = u8(hp);
+        }
     }
     for(int i = 0; i < MAX_MOBS; i++) {
         Mob& o = mobs[i];
@@ -401,11 +404,13 @@ void Game::updateAllMobs() {
            adz < 18 && m.y < ty + 24 && m.y + hgt > ty) {
             m.cool = MOB_ATTACK_COOL;
             if(m.target == 0xFF) {
-                int hp = (int)pl.health - dmgN;
-                if(hp <= 0)
-                    gameOverPending = true;
-                else
-                    pl.health = u8(hp);
+                if(!world.creative()) {
+                    int hp = (int)pl.health - dmgN;
+                    if(hp <= 0)
+                        gameOverPending = true;
+                    else
+                        pl.health = u8(hp);
+                }
             } else {
                 bool boomPrey = (mobSpec(mobs[m.target].species).info & 1) != 0;
                 hurtMobFrom(m.target, dmgN, m.x + 7, m.z + 7, (uint8_t)mi);

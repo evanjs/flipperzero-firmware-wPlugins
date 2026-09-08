@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 ApertureFox Technology. MIT License.
 import argparse
 import struct
 import sys

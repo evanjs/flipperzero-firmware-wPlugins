@@ -1,3 +1,4 @@
+// Copyright (c) 2026 ApertureFox Technology. MIT License.
 #include "game.h"
 #include <algorithm>
 #include <cstring>
@@ -102,12 +103,17 @@ bool Game::setup(const GameConfig& config) {
         m = Mob{};
     loadStorageDirectory();
     loadInventory();
+    // Per-world render settings from the header. Both are read once: the sun
+    // never moves and the draw distance never changes inside a session.
+    renderer.setShaders(world.shadersOn());
+    renderer.setNearOnly(!world.farDraw());
     screenId = SCR_PLAY;
     selSlot = -1;
     cursor = 0;
     score = 0;
     gameOverPending = false;
     loadedTile = -1;
+    exitDelete = false;
     screen.fb = &fb;
     renderer.zbuf = fb.px; // one shared buffer: depth in bits 1-7, colour in bit 0
 
@@ -277,7 +283,16 @@ void Game::flushTileStorage(int ti) {
 }
 
 // On-disk inventory record: 15 {type,count} cells, then health<<4 | invSlot.
+// Creative has no inventory, so the same region holds exactly what FlipcraftRTX
+// kept there -- the selected palette index, one byte. A world's mode never
+// changes, so the two readings can never meet.
 void Game::loadInventory() {
+    if(world.creative()) {
+        uint8_t b = 0;
+        if(world.readInventory(&b, 1) && b < PALETTE_COUNT) pl.sel = b;
+        pl.health = MAXHEALTH;
+        return;
+    }
     uint8_t buf[31];
     if(world.readInventory(buf, 31)) {
         for(int i = 0; i < 15; i++)
@@ -296,6 +311,11 @@ void Game::loadInventory() {
     }
 }
 void Game::saveInventory() {
+    if(world.creative()) {
+        uint8_t b = pl.sel;
+        world.writeInventory(&b, 1);
+        return;
+    }
     uint8_t buf[31];
     for(int i = 0; i < 15; i++) {
         buf[2 * i] = pl.inventory[i].type;
@@ -310,8 +330,9 @@ void Game::saveInventory() {
 // the first solid block wins the hit (h.mob >= 0).
 Game::RayHit Game::rayCast() {
     RayHit h{0, 0, 0, 0, 0, 0, BLOCK_AIR, -1, -1};
-    const float ox = playerX + PLAYERHALFWIDTH, oy = playerY + PLAYERCAMHEIGHT,
-                oz = playerZ + PLAYERHALFWIDTH;
+    // the eye of the frame the player is looking at (crouch + head bob included),
+    // so the ray is exactly the pixel under the crosshair
+    const float ox = renderer.camPos[0], oy = renderer.camPos[1], oz = renderer.camPos[2];
     const float dx = renderer.matrix[2][0], dy = renderer.matrix[2][1], dz = renderer.matrix[2][2];
 
     int bx = ifloor(ox * (1.0f / 16.0f)), by = ifloor(oy * (1.0f / 16.0f)),
@@ -335,16 +356,7 @@ Game::RayHit Game::rayCast() {
 
     float t = 0, tBlock = (float)RAYCASTMAXLENGTH;
     while(t <= (float)RAYCASTMAXLENGTH) {
-        if(by < 0) {
-            h.id = -1;
-            h.length = (int)t;
-            h.bx = bx;
-            h.by = by;
-            h.bz = bz;
-            tBlock = t;
-            break;
-        }
-        uint8_t id = world.getBlock(bx, by, bz);
+        int id = by < 0 ? -1 : world.getBlock(bx, by, bz);
         if(id != BLOCK_AIR) {
             h.id = id;
             h.length = (int)t;
@@ -375,31 +387,39 @@ Game::RayHit Game::rayCast() {
         }
     }
 
-    // Generous pick: a creature counts as aimed at when its centre projects
-    // into the middle half of the screen (|sx-64|<=32 -> 7|camX| <= 4*camZ)
-    // and no wall is closer along the view axis. Nearest such body wins.
-    float bestW = tBlock * 16.0f;
+    // A creature is aimed at when its projected body reaches into the AIM_RADIUS
+    // circle around the crosshair and no wall stands in front of it. Nearest wins.
+    float bestW = tBlock;
     ActiveWindow win = activeWindowAround(
         (playerX + PLAYERHALFWIDTH) / BLOCKSIZE,
         (playerZ + PLAYERHALFWIDTH) / BLOCKSIZE,
         world.worldSX(),
         world.worldSZ());
     const float(*M)[3] = renderer.matrix;
-    for(int i = 0; i < MAX_MOBS; i++) {
-        const Mob& m = mobs[i];
-        if(!m.active) continue;
-        int mbx = (m.x + 7) >> 4, mbz = (m.z + 7) >> 4; // dormant off-ring bodies are not hittable
-        if(mbx < win.x0 || mbx > win.x1 || mbz < win.z0 || mbz > win.z1) continue;
-        const float hgt = (float)((mobSpec(m.species).geom >> 4) << 1);
-        float rx = m.x + 7 - ox, ry = m.y + hgt * 0.5f - oy, rz = m.z + 7 - oz;
-        float cz = M[2][0] * rx + M[2][1] * ry + M[2][2] * rz;
-        if(cz < (float)CLIP || cz >= bestW) continue;
-        float cx = M[0][0] * rx + M[0][2] * rz;
-        float cy = M[1][0] * rx + M[1][1] * ry + M[1][2] * rz;
-        if(7.0f * fabsf(cx) > 4.0f * cz || 7.0f * fabsf(cy) > 4.0f * cz) continue;
-        h.mob = i;
-        bestW = cz;
-    }
+    if(world.mobsOn())
+        for(int i = 0; i < MAX_MOBS; i++) {
+            const Mob& m = mobs[i];
+            if(!m.active) continue;
+            int mbx = (m.x + 7) >> 4,
+                mbz = (m.z + 7) >> 4; // dormant off-ring bodies are not hittable
+            if(mbx < win.x0 || mbx > win.x1 || mbz < win.z0 || mbz > win.z1) continue;
+            const float hgt = (float)((mobSpec(m.species).geom >> 4) << 1);
+            float rx = m.x + 7 - ox, ry = m.y + hgt * 0.5f - oy, rz = m.z + 7 - oz;
+            float cz = M[2][0] * rx + M[2][1] * ry + M[2][2] * rz;
+            if(cz < (float)CLIP || cz - (float)(MOBWIDTH / 2) >= bestW)
+                continue; // body front, not centre
+            float cx = M[0][0] * rx + M[0][2] * rz;
+            float cy = M[1][0] * rx + M[1][1] * ry + M[1][2] * rz;
+            const float s = (float)LENS / cz; // world units -> pixels at this depth
+            float ex = fabsf(cx) * s -
+                       (float)(MOBWIDTH / 2) * s; // gap from the crosshair to the body box
+            float ey = fabsf(cy) * s - hgt * 0.5f * s;
+            if(ex < 0.0f) ex = 0.0f;
+            if(ey < 0.0f) ey = 0.0f;
+            if(ex * ex + ey * ey > (float)(AIM_RADIUS * AIM_RADIUS)) continue;
+            h.mob = i;
+            bestW = cz;
+        }
     return h;
 }
 
@@ -476,7 +496,7 @@ void Game::handleBreakAndPlace(const Input& in) {
             tiles[be].loaded = false; // destroyed: never flush it back to disk
         }
         world.setBlock(bx, by, bz, BLOCK_AIR);
-        if(net >= STRENGTHFORITEM) {
+        if(!world.creative() && net >= STRENGTHFORITEM) {
             uint8_t drop = kBlockDrop[id & 0x1F];
             if(drop == 0xFF) { // leaves
                 if(strength == STRENGTH_IRON)
@@ -509,55 +529,66 @@ void Game::handleBreakAndPlace(const Input& in) {
         return;
     }
     if(in.placePressed) {
-        if(id == BLOCK_TABLE) {
-            screenId = SCR_CRAFTING;
-            cursor = 0;
-            selSlot = -1;
-            return;
-        }
         if(id == BLOCK_DYNAMITE) {
             igniteDynamite(bx, by, bz, DYNAMITE_FUSE_TICKS);
             return;
         }
-        if(id == BLOCK_FURNACE || id == BLOCK_CHEST) {
-            int bi = findBlockEntity(bx, by, bz);
-            if(bi < 0) { // block without a directory entry (storage table was full): adopt it
-                BlockEnt b;
-                b.active = true;
-                b.isChest = (id == BLOCK_CHEST);
-                b.bx = bx;
-                b.by = by;
-                b.bz = bz;
-                b.dir = (hit.pz < bz) ? 2 :
-                        (hit.pz > bz) ? 3 :
-                        (hit.px < bx) ? 0 :
-                        (hit.px > bx) ? 1 :
-                                        (pl.rot & 0x0F);
-                b.storage = allocStorage();
-                if(b.storage >= 0) {
-                    uint8_t sb[STORAGE_SLOT_SIZE];
-                    packStorage(b, sb);
-                    world.writeStorageSlot(b.storage, sb);
-                }
-                tiles.push_back(b);
-                bi = (int)tiles.size() - 1;
+        // The table/furnace/chest screens all move item stacks around, and in
+        // creative there are none: those blocks are only ever placed there.
+        if(!world.creative()) {
+            if(id == BLOCK_TABLE) {
+                screenId = SCR_CRAFTING;
+                cursor = 0;
+                selSlot = -1;
+                return;
             }
-            openTileStorage(bi);
-            loadedTile = bi;
-            screenId = tiles[bi].isChest ? SCR_CHEST : SCR_FURNACE;
-            cursor = 0;
-            selSlot = -1;
-            return;
+            if(id == BLOCK_FURNACE || id == BLOCK_CHEST) {
+                int bi = findBlockEntity(bx, by, bz);
+                if(bi < 0) { // block without a directory entry (storage table was full): adopt it
+                    BlockEnt b;
+                    b.active = true;
+                    b.isChest = (id == BLOCK_CHEST);
+                    b.bx = bx;
+                    b.by = by;
+                    b.bz = bz;
+                    b.dir = (hit.pz < bz) ? 2 :
+                            (hit.pz > bz) ? 3 :
+                            (hit.px < bx) ? 0 :
+                            (hit.px > bx) ? 1 :
+                                            (pl.rot & 0x0F);
+                    b.storage = allocStorage();
+                    if(b.storage >= 0) {
+                        uint8_t sb[STORAGE_SLOT_SIZE];
+                        packStorage(b, sb);
+                        world.writeStorageSlot(b.storage, sb);
+                    }
+                    tiles.push_back(b);
+                    bi = (int)tiles.size() - 1;
+                }
+                openTileStorage(bi);
+                loadedTile = bi;
+                screenId = tiles[bi].isChest ? SCR_CHEST : SCR_FURNACE;
+                cursor = 0;
+                selSlot = -1;
+                return;
+            }
         }
-        ItemCell& cell = pl.inventory[pl.invSlot];
-        uint8_t item = cell.type;
-        bool placeable =
-            !(item == 0 || cell.count == 0 || (item >= ITEM_IRONINGOT && item < ITEM_TABLE) ||
-              item == ITEM_COAL || item == ITEM_GUNPOWDER);
-        if(!placeable) return;
-        int blockId = (item == ITEM_DYNAMITE) ?
+        // Creative holds a palette index and never spends anything; survival
+        // holds an item stack, which decides the block and is decremented.
+        int blockId;
+        if(world.creative()) {
+            blockId = BLOCK_PALETTE[pl.sel];
+        } else {
+            ItemCell& c = pl.inventory[pl.invSlot];
+            uint8_t item = c.type;
+            bool placeable =
+                !(item == 0 || c.count == 0 || (item >= ITEM_IRONINGOT && item < ITEM_TABLE) ||
+                  item == ITEM_COAL || item == ITEM_GUNPOWDER);
+            if(!placeable) return;
+            blockId = (item == ITEM_DYNAMITE) ?
                           BLOCK_DYNAMITE :
                           ((item >= ITEM_TABLE) ? (item & 0x0F) : (item >> 4));
+        }
         int px = hit.px, py = hit.py, pz = hit.pz;
         if(blockId == BLOCK_SAPLING) {
             uint8_t below = world.getBlock(px, py - 1, pz);
@@ -595,11 +626,15 @@ void Game::handleBreakAndPlace(const Input& in) {
             }
             tiles.push_back(b);
         }
-        if(--cell.count == 0) cell = {};
+        if(!world.creative()) {
+            ItemCell& c = pl.inventory[pl.invSlot];
+            if(--c.count == 0) c = {};
+        }
     }
 }
 
 bool Game::boxCollides(int x, int y, int z, int w, int h) {
+    if(y < 0) return true;
     for(int bx = x / 16; bx <= (x + w) / 16; bx++)
         for(int by = y / 16; by <= (y + h) / 16; by++)
             for(int bz = z / 16; bz <= (z + w) / 16; bz++)
@@ -656,7 +691,7 @@ void Game::moveAndCollide(int dx, int dy, int dz) {
         if(dy < 0) {
             int speed = -velYsub * JUMP_AIRTIME / VERT_SUBPIXEL;
             int over = speed - MINFALLDAMAGESPEED;
-            if(over > 0) {
+            if(over > 0 && !world.creative()) {
                 int dmg = smul446(over, FALLDAMAGESCALING);
                 int hp = (int)pl.health - dmg;
                 if(hp <= 0) {
@@ -675,12 +710,7 @@ void Game::moveAndCollide(int dx, int dy, int dz) {
         y = ny;
     } else
         y = ny;
-    if(y < 0) {
-        y = 0;
-        pl.onGround = true;
-        velYsub = 0;
-        posYsub = 0;
-    }
+    if(y < 0) y = 0;
 
     playerX = x;
     playerY = y;
@@ -967,6 +997,14 @@ void Game::respawn() {
         (playerX + PLAYERHALFWIDTH) / BLOCKSIZE, (playerZ + PLAYERHALFWIDTH) / BLOCKSIZE, true);
 }
 
+// centre plus, inverted against whatever the world drew under it
+void Game::drawCrosshair() {
+    screen.invertRect(
+        CROSSHAIR_X - CROSSHAIR_ARM, CROSSHAIR_Y, CROSSHAIR_X + CROSSHAIR_ARM, CROSSHAIR_Y);
+    screen.invertRect(CROSSHAIR_X, CROSSHAIR_Y - CROSSHAIR_ARM, CROSSHAIR_X, CROSSHAIR_Y - 1);
+    screen.invertRect(CROSSHAIR_X, CROSSHAIR_Y + 1, CROSSHAIR_X, CROSSHAIR_Y + CROSSHAIR_ARM);
+}
+
 void Game::drawHotbar() {
     screen.x1 = 35;
     screen.y1 = 51;
@@ -978,15 +1016,18 @@ void Game::drawHotbar() {
     screen.x2 = 91;
     screen.y2 = 63;
     screen.drawRect();
-    int sel = pl.invSlot;
+    // Survival shows the five inventory slots. Creative shows a window onto
+    // the palette with the held block in the middle cell, as in FlipcraftRTX.
+    const bool cre = world.creative();
     for(int i = 0; i < 5; i++) {
         int x = 37 + i * 11, y = 53;
+        const bool held = cre ? (i == 2) : (i == pl.invSlot);
         screen.x1 = x;
         screen.y1 = y;
         screen.x2 = x + 9;
         screen.y2 = y + 9;
         screen.clearRect();
-        if(i == sel) {
+        if(held) {
             screen.x1 = x;
             screen.y1 = y;
             screen.x2 = x + 9;
@@ -998,9 +1039,18 @@ void Game::drawHotbar() {
             screen.y2 = y + 8;
             screen.clearRect();
         }
-        screen.slotItem(x, y, 10, pl.inventory[i], false);
+        if(cre)
+            screen.blockSlot(
+                x,
+                y,
+                10,
+                BLOCK_PALETTE[(pl.sel + i - 2 + PALETTE_COUNT * 2) % PALETTE_COUNT],
+                false);
+        else
+            screen.slotItem(x, y, 10, pl.inventory[i], false);
     }
-    if(!hudItemTicks) // tooltip in device.cpp takes the hearts' place
+    // Creative cannot lose health, so the row of full hearts would be noise.
+    if(!hudItemTicks && !cre) // tooltip in device.cpp takes their place
         for(int i = 0; i < MAXHEALTH; i++)
             screen.heart(35 + i * 6, 43, i < (int)pl.health);
 }
@@ -1027,20 +1077,21 @@ void Game::renderWorld() {
             else
                 renderer.renderItem(e.x / 16.0f, e.y / 16.0f, e.z / 16.0f, (uint8_t)e.id);
         }
-    for(const auto& m : mobs)
-        if(m.active) {
-            int sc16 = 16; // fusing exploder swells to ~1.4x at detonation
-            if((mobSpec(m.species).info & 1) && m.cool)
-                sc16 = 16 + ((MOB_FUSE_TICKS - m.cool) * 7) / MOB_FUSE_TICKS;
-            renderer.renderMob(
-                (float)(m.x + 7),
-                (float)m.y,
-                (float)(m.z + 7),
-                m.species,
-                (uint8_t)(m.yaw & 15),
-                (uint8_t)((m.hurt & 1) << 1),
-                (uint8_t)sc16);
-        }
+    if(world.mobsOn())
+        for(const auto& m : mobs)
+            if(m.active) {
+                int sc16 = 16; // fusing exploder swells to ~1.4x at detonation
+                if((mobSpec(m.species).info & 1) && m.cool)
+                    sc16 = 16 + ((MOB_FUSE_TICKS - m.cool) * 7) / MOB_FUSE_TICKS;
+                renderer.renderMob(
+                    (float)(m.x + 7),
+                    (float)m.y,
+                    (float)(m.z + 7),
+                    m.species,
+                    (uint8_t)(m.yaw & 15),
+                    (uint8_t)((m.hurt & 1) << 1),
+                    (uint8_t)sc16);
+            }
 }
 
 void Game::finishRender() {
@@ -1048,15 +1099,21 @@ void Game::finishRender() {
     RayHit hit = rayCast();
     if(hit.mob < 0 && hit.id != BLOCK_AIR && hit.id != -1 && hit.length >= 0)
         renderer.renderOverlay(world, hit.bx, hit.by, hit.bz, 0);
+    drawCrosshair();
     drawHotbar();
 }
 
 void Game::worldFrame(const Input& in) {
     if(in.slotScroll) {
-        int s = pl.invSlot + in.slotScroll;
-        if(s < 0) s = 4;
-        if(s > 4) s = 0;
-        pl.invSlot = (uint8_t)s;
+        if(world.creative()) {
+            int s = (pl.sel + in.slotScroll + PALETTE_COUNT) % PALETTE_COUNT;
+            pl.sel = (uint8_t)s;
+        } else {
+            int s = pl.invSlot + in.slotScroll;
+            if(s < 0) s = 4;
+            if(s > 4) s = 0;
+            pl.invSlot = (uint8_t)s;
+        }
         hudItemTicks = HUD_LABEL_TICKS;
     } else if(hudItemTicks)
         hudItemTicks--;
@@ -1064,7 +1121,7 @@ void Game::worldFrame(const Input& in) {
     if(screenId != SCR_PLAY) return;
     miscInputs(in);
     updateAllItems();
-    updateAllMobs();
+    if(world.mobsOn()) updateAllMobs();
     doRandomTicks();
     simulateFurnaces(); // every furnace in the active window smelts, GUI open or not
     if(gameOverPending) {
@@ -1112,8 +1169,18 @@ Game::SlotList Game::buildSlots(ScreenId s) {
     return v;
 }
 
+uint8_t Game::pickerCursorBlock(int* sx, int* sy) {
+    if(screenId != SCR_PICKER || cursor < 0 || cursor >= PALETTE_COUNT) return BLOCK_AIR;
+    int cx = 0, cy = 0;
+    pickerCell(cursor, cx, cy);
+    if(sx) *sx = cx;
+    if(sy) *sy = cy;
+    return BLOCK_PALETTE[cursor];
+}
+
 ItemCell Game::guiCursorItem(int* sx, int* sy) {
     if(screenId == SCR_PLAY || screenId == SCR_GAMEOVER) return {};
+    if(screenId == SCR_PICKER) return {}; // the picker holds blocks, not items
     auto slots = buildSlots(screenId);
     if(cursor < 0 || cursor >= (int)slots.size()) return {};
     if(sx) *sx = slots[cursor].sx;
@@ -1271,19 +1338,88 @@ void Game::drawGui() {
 
 void Game::simulate(const Input& in) {
     if(screenId == SCR_GAMEOVER) {
-        if(in.menuSelect) respawn();
+        // Survival respawns on the spot. Hardmode does not: the run is over,
+        // and the host removes the save once this session has closed the file.
+        if(in.menuSelect) {
+            if(world.hardcore())
+                exitDelete = true;
+            else
+                respawn();
+        }
         return;
     }
     if(screenId == SCR_PLAY) {
         if(in.openInventory) {
-            screenId = SCR_INVENTORY;
+            screenId = world.creative() ? SCR_PICKER : SCR_INVENTORY;
             cursor = 0;
             selSlot = -1;
             return;
         }
         worldFrame(in);
+    } else if(screenId == SCR_PICKER) {
+        pickerFrame(in);
     } else {
         guiFrame(in);
+    }
+}
+
+// Creative block picker, ported from FlipcraftRTX. The palette replaces the
+// inventory screen: picking an entry fills the held hotbar slot with a stack
+// that placing never spends.
+void Game::pickerCell(int index, int& sx, int& sy) const {
+    sx = 38 + (index % PICKER_COLS) * PICKER_CELL;
+    sy = 14 + (index / PICKER_COLS) * PICKER_CELL;
+}
+void Game::pickerFrame(const Input& in) {
+    if(in.openInventory) {
+        screenId = SCR_PLAY;
+        return;
+    }
+    if(in.navX || in.navY) {
+        int csx, csy;
+        pickerCell(cursor, csx, csy);
+        int best = cursor, bestd = 1 << 30;
+        for(int i = 0; i < PALETTE_COUNT; i++) {
+            int sx, sy;
+            pickerCell(i, sx, sy);
+            int dsx = sx - csx, dsy = sy - csy;
+            if(in.navX > 0 && dsx <= 0) continue;
+            if(in.navX < 0 && dsx >= 0) continue;
+            if(in.navY > 0 && dsy >= 0) continue; // screen y grows downwards
+            if(in.navY < 0 && dsy <= 0) continue;
+            int d = dsx * dsx + dsy * dsy;
+            if(d < bestd) {
+                bestd = d;
+                best = i;
+            }
+        }
+        cursor = best;
+    }
+    if(in.menuSelect) {
+        pl.sel = (uint8_t)cursor;
+        hudItemTicks = HUD_LABEL_TICKS;
+        screenId = SCR_PLAY;
+    }
+}
+void Game::drawPicker() {
+    renderWorld(); // the world stays visible at the sides
+    screen.fillRect(34, 0, 93, SCREEN_HEIGHT - 1, 0);
+    screen.fillRect(33, 0, 33, SCREEN_HEIGHT - 1, 1);
+    screen.fillRect(94, 0, 94, SCREEN_HEIGHT - 1, 1);
+    for(int i = 0; i < PALETTE_COUNT; i++) {
+        int sx, sy;
+        pickerCell(i, sx, sy);
+        const int w = PICKER_CELL - 1;
+        screen.fillRect(sx, sy, sx + w - 1, sy + w - 1, 1);
+        screen.blockSlot(sx, sy, w, BLOCK_PALETTE[i], true);
+        if(i == pl.sel) { // held: inverted 1px ring inside the cell
+            screen.invertRect(sx, sy, sx + w - 1, sy);
+            screen.invertRect(sx, sy + w - 1, sx + w - 1, sy + w - 1);
+            screen.invertRect(sx, sy + 1, sx, sy + w - 2);
+            screen.invertRect(sx + w - 1, sy + 1, sx + w - 1, sy + w - 2);
+        }
+        if(i == cursor) // rim stays dark so an empty cell can't vanish
+            screen.invertRect(sx + 1, sy + 1, sx + w - 2, sy + w - 2);
     }
 }
 
@@ -1318,6 +1454,7 @@ uint32_t Game::visualSignature() const {
         mixCell(pl.craftGrid[i]);
     mixCell(pl.craftOutput);
     mix(pl.invSlot);
+    mix(pl.sel);
     mix(pl.rot);
     mix(pl.health);
     mix(hudItemTicks);
@@ -1355,8 +1492,13 @@ bool Game::render() {
     if(!forceRedraw && sig == lastSig) return false;
     lastSig = sig;
     forceRedraw = false;
+    // A chunk the renderer deferred last frame still has to appear, so keep
+    // asking for frames until the rebuild budget has caught up.
+    if(renderer.meshPending) forceRedraw = true;
     if(screenId == SCR_PLAY)
         finishRender();
+    else if(screenId == SCR_PICKER)
+        drawPicker();
     else
         drawGui();
     return true;
