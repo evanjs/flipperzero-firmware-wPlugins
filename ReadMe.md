@@ -117,6 +117,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Quac! v0.10.0 (By rdefeo)](https://github.com/rdefeo/quac)
 - Updated: [Gurpil v0.1.9 (By Endika)](https://github.com/Endika/flipper-gurpil)
 - Updated: [Flipcraft v2.6 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
+- Updated: [Fake Chip Detector v0.8 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 
 <a name="release"></a>
 
@@ -543,7 +544,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Evil BW16 Controller v1.0 (By dagnazty)](https://github.com/dagnazty/Flipper_Apps)
 - [Evil Portal v0.6 (By bigbrodude6119)](https://github.com/bigbrodude6119/flipper-zero-evil-portal)
 - [Eye Saver v0.1 (By paul-sopin)](https://github.com/paul-sopin/flipper-eye-saver)
-- [Fake Chip Detector v0.7 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
+- [Fake Chip Detector v0.8 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 - [FAP Boilerplate v1.3 (By leedave)](https://github.com/leedave/flipper-zero-fap-boilerplate)
 - [Faraday v1.2 (By at0m-b0mb)](https://github.com/at0m-b0mb/Faraday-FlipperZero)
 - [FCC ID Lookup v0.1 (By lrehmann)](https://github.com/lrehmann/fcc-id-lookup-flipper)
