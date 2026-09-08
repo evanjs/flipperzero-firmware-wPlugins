@@ -111,6 +111,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [ZeroMesh v3.1 (By SAMS0N1TE)](https://github.com/SAMS0N1TE/ZeroMesh) `Req: Meshtastic`
 - Updated: [TagTinker v2.1 (By i12bp8)](https://github.com/i12bp8/TagTinker)
 - Updated: [FlipDeFlock v0.91 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
+- Updated: [Rush Hour v0.1.7 (By Endika)](https://github.com/Endika/flipper-tutu)
 
 <a name="release"></a>
 
@@ -352,7 +353,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Rock Paper Scissors 3 v1.0 (By xantopren)](https://github.com/xantopren/rock-paper-scissors)
 - [Root of Life v1.4 (By Xorboo)](https://github.com/Xorboo/root-of-life)
 - [Rubiks Cube Scrambler v1.4 (By RaZeSloth)](https://github.com/RaZeSloth/flipperzero-rubiks-cube-scrambler)
-- [Rush Hour v0.1.6 (By Endika)](https://github.com/Endika/flipper-tutu)
+- [Rush Hour v0.1.7 (By Endika)](https://github.com/Endika/flipper-tutu)
 - [Scorched Tanks v1.4 (By jasniec)](https://github.com/jasniec/flipper-scorched-tanks-game)
 - [Secret Toggle (By nostrumuva)](https://github.com/nostrumuva/secret_toggle)
 - [Simon Says v0.2 (By SimplyMinimal)](https://github.com/SimplyMinimal/FlipperZero-SimonSays)
