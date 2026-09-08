@@ -114,6 +114,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Rush Hour v0.1.7 (By Endika)](https://github.com/Endika/flipper-tutu)
 - Updated: [Habit Flow v0.1.3 (By Endika)](https://github.com/Endika/flipper-habit-flow)
 - Updated: [Sub Duplicate Finder v1.2.2 (By Endika)](https://github.com/Endika/flipper-sub-dup)
+- Updated: [Quac! v0.10.0 (By rdefeo)](https://github.com/rdefeo/quac)
 
 <a name="release"></a>
 
@@ -837,7 +838,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [ProtoView v1.3 (By antirez)](https://github.com/antirez/protoview)
 - [QR Code v2.1.4 (By bmatcuk)](https://github.com/bmatcuk/flipperzero-qrcode)
 - [QRCode Generator v0.1 (By qw3rtty)](https://github.com/qw3rtty/flipperzero-qrcode-generator)
-- [Quac! v0.9.1 (By rdefeo)](https://github.com/rdefeo/quac)
+- [Quac! v0.10.0 (By rdefeo)](https://github.com/rdefeo/quac)
 - [Quadratic Solver v0.1 (By paul-sopin)](https://github.com/paul-sopin/flipper-quadratic-solver)
 - [R.O.B. Control v1.0.1 (By riney)](https://github.com/riney/flip_rob)
 - [Radar Scanner v2.0 (By MatthewKuKanich)](https://github.com/MatthewKuKanich/flipper-radar) `Req: RCWL-0516`
