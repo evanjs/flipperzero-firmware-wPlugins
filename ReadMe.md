@@ -115,6 +115,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Habit Flow v0.1.3 (By Endika)](https://github.com/Endika/flipper-habit-flow)
 - Updated: [Sub Duplicate Finder v1.2.2 (By Endika)](https://github.com/Endika/flipper-sub-dup)
 - Updated: [Quac! v0.10.0 (By rdefeo)](https://github.com/rdefeo/quac)
+- Updated: [Gurpil v0.1.9 (By Endika)](https://github.com/Endika/flipper-gurpil)
 
 <a name="release"></a>
 
@@ -296,7 +297,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Ghouls v0.6 (By jblanked)](https://github.com/jblanked/Ghouls-Flipper) `Req: ESP32` with [FliperHTTP Firmware](https://github.com/jblanked/FlipperHTTP)
 - [Groks Adventure v0.15 (By DigiMancer3D)](https://github.com/DigiMancer3D/Groks_Adventure)
 - [Guess The Number v1.3 (By kWAYTV)](https://github.com/kWAYTV/guess-the-number-fz)
-- [Gurpil v0.1.8 (By Endika)](https://github.com/Endika/flipper-gurpil)
+- [Gurpil v0.1.9 (By Endika)](https://github.com/Endika/flipper-gurpil)
 - [Hangman v1.5 (By Evgeny Stepanischev & Eva Stepanischeva)](https://github.com/bolknote/Flipper-Zero-Hangman-Game)
 - [Hanoi Towers v1.0 (By AlexTaran)](https://github.com/AlexTaran/flipperzero)
 - [Heap Defence v1.4 (By xMasterX)](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/commit/fc776446de9fdd553b221c02668b925b689378d8)
