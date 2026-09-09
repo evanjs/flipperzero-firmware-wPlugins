@@ -1,7 +1,8 @@
 # Backlog and handover
 
 Where the work stands, what is blocked and on what, and — most importantly — **which merged
-changes have never been run on real hardware.** Written 20 Aug 2026.
+changes have never been run on real hardware.** Written 20 Aug 2026, last touched after the
+QMC5883P bench session of 9 Sep 2026.
 
 If you are picking this up cold, read [README.md](README.md) for what the app is, then this
 file for what is left.
@@ -13,7 +14,10 @@ file for what is left.
   `SUPPORTED_CHIPS.md matches chip_db.c`, and a build against each of the three firmware
   SDKs (official, Unleashed, Momentum). The builds are the only compile check that exists —
   `ufbt lint` runs clang-format and nothing more.
-- 80 I²C parts and 15 1-Wire families in the database.
+- 82 I²C parts and 15 1-Wire families in the database.
+- The bench is an `ssh notebook` (Windows) with a Flipper on COM5 running Unleashed. The app
+  is installed at `/ext/apps/GPIO/Programmers/fake_chip_detector.fap`; `tools/flipper_rpc.py`
+  drives it over the RPC channel for screenshots and key presses.
 
 ## The honest list: merged but never exercised on hardware
 
@@ -29,9 +33,32 @@ tried when a Flipper and the right parts are next in the same room.
 | Strap-and-blink power-cycle ladder, and the pad meter | #20 | The rail blink, and the automatic rescan behind it, unwatched. The pad meter has never been checked against a known level (pin 8 must read LOW, pin 9 HIGH, open air FLOATING). |
 | Live-test verdict wording | #21 | Never seen on a screen. |
 | Chip `kind` renames | #33 | Text only. Widths were measured exactly (see below), not photographed. |
-| AK09911 live test | #40 | **Never run on hardware.** No self-test coil has been fired, no CNTL2 write has been acknowledged, and the sensitivity correction was checked against one bench capture pasted into issue #38 rather than against a part on this desk. |
-| AK09911 and QMC5883P database rows, and the `RST` mode pin | #40 | The QMC5883P was added from its datasheet alone and no part has answered at 0x2C here. The AK09911's addresses and reset polarity come from the short-form datasheet; the register map behind the two ID checks rests on issue #38's citation agreeing with a bench read of `48 05 20 00`. The `RST` pad has never been strapped. |
+| AK09911 saturation screen | #44 | The overflow branch was rewritten to publish its own frame instead of freezing the display, and no magnet has been held against a part to watch it. Everything else in this test has now run. |
+| QMC5883P live test thresholds | #46, #47 | The test itself has now run and passed twice on a GY-271 board, most recently on 0.11 — but both of its thresholds are still derived rather than measured: the coil floor from the datasheet's noise figure, the 300-count movement from its sensitivity figure. The still part's noise floor has never been recorded, and one pass came after only two reads, which is few enough that a sensor reconnecting mid-test could supply the swing on its own. Measure the still part, and consider requiring more than two samples before a pass. |
+| The `RST` mode pin | #40 | The `RST` pad has never been strapped; neither magnetometer board on the bench was wired for it. |
 | `SEVERAL POSSIBLE` verdict | #40 | Covered by the host test in `tools/chip_db_test/`, which is real coverage of the decision but not of the screen. The summary line, the `Fits:` list on the detail screen and the report paragraph have never been drawn. |
+
+**Run on hardware 9 Sep 2026, and no longer on the list above:** an AK09911 on a Flipper
+running Unleashed identified as `GENUINE at 0x0D`, and its live test passed end to end — the
+self-test coil fired and landed inside the datasheet window, and the field followed the board
+when it was turned. That session is also what found #44: the screen only draws two lines under
+a heading and progress boxes, so the third was silently dropped, and the movement threshold had
+been calibrated against a magnet and sat above the physical maximum of the earth's field. Both
+are fixed. The AK09911 is the second part ever driven end to end here.
+
+**Also run on hardware 9 Sep 2026:** a blue board silkscreened GY-271 identified as
+`QMC5883P` at 0x2C, and the question screen drew its note — `GY-271 board, not a 5883L` —
+above the verdict with the layout of #45 intact, which is what that change was for. Its live
+test then passed on its first run: 1036 reads, both proof boxes filled, the coil fired and the
+field followed the board. A second entry into the same test did not, and that is what #46
+fixes: the self-test read was waiting on a DRDY the part had already stopped producing, and
+the measurement configuration was written on top of the previous run's mode instead of a mode
+this test had established.
+
+**And again on 0.11, after #47:** the test was re-entered on the same board and passed — the
+coil fired, the field followed, and the field magnitude read 27 µT, inside the earth's 25 to 65.
+That run also confirmed the pacing fix: screenshots over the RPC channel work during the test
+now, where 0.10 flooded the screen stream until USB writes timed out.
 
 Screen widths in #33 and #34 were measured with
 [`tools/screen_width.py`](tools/screen_width.py), which decodes the real `FontSecondary`
