@@ -22,13 +22,13 @@ UHF RFID Reader/Writer expansion for Flipper Zero, communicating over UART bridg
 
 ## Screenshots
 
-| Radar | About |
+| Main menu | TID Decoder |
 |:--:|:--:|
-| ![Radar screen](images/01.png) | ![About screen](images/05.png) |
-| **Settings menu** | **Tag counter** |
-| ![Settings menu](images/04.png) | ![Tag counter screen](images/03.png) |
-| **Tag list** | |
-| ![Tag list screen](images/02.png) | |
+| ![Main menu](images/01.png) | ![TID Decoder](images/05.png) |
+| **Tag operations** | **Tag Inventory** |
+| ![Tag operations](images/04.png) | ![Tag Inventory](images/03.png) |
+| **UHF Radar** | **EPC Fuzzing** |
+| ![UHF Radar](images/02.png) | ![EPC Fuzzing](images/06.png) |
 
 ## Hardware Setup
 

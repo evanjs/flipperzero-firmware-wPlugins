@@ -406,7 +406,7 @@ static const char* const uhf_startup_names[] = {
 static const char* const uhf_about_lines[] = {
     "UHF tools by MTCK",
     "AKA MTools Tec",
-    "Version: 1.2",
+    "Version: 1.3",
     "Github: mtoolstec/",
     "fz-uhf-expansion",
 };
@@ -1598,7 +1598,7 @@ static bool uhf_write_selected_bank(UhfApp* app, UhfTagBank bank, const char* va
                   false)) {
         uhf_set_status(app, "Write OK; verify failed");
         uhf_notify_write_result(app, false);
-        return true;
+        return false;
     }
     if(strcmp(verify, value_hex) != 0) {
         uhf_set_status(app, "Verify mismatch");
@@ -3143,12 +3143,12 @@ static void uhf_draw_callback(Canvas* canvas, void* context) {
             if(top > max_top) top = max_top;
         }
 
-        int y = 24;
+        int y = 22;
         for(size_t i = 0; i < UHF_ABOUT_VISIBLE_LINES; i++) {
             const size_t line_idx = top + i;
             if(line_idx >= total_lines) break;
             canvas_draw_str(canvas, 0, y, uhf_about_lines[line_idx]);
-            y += 8;
+            y += 10;
         }
     } else if(page == UhfPageTagActions) {
         canvas_set_font(canvas, FontSecondary);
@@ -3953,7 +3953,10 @@ static void uhf_handle_input(UhfApp* app, const InputEvent* input) {
             }
         } else if(app->page == UhfPageEpcFuzzing && app->fuzz_base_epc[0] && input->type == InputTypeShort) {
             app->tag_access_unfiltered = true;
-            (void)uhf_write_selected_bank(app, UhfTagBankEpc, app->selected_epc);
+            if(uhf_write_selected_bank(app, UhfTagBankEpc, app->selected_epc)) {
+                app->fuzz_sequence++;
+                uhf_make_fuzz_epc(app);
+            }
         } else if(app->page == UhfPageTagActions) {
             if(input->type == InputTypeShort) uhf_write_current_tag_bank(app);
         } else if(app->page == UhfPageList || app->page == UhfPageRadar) {

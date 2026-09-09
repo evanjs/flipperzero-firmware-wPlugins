@@ -1,3 +1,11 @@
+v1.3:
+
+- Refined the feature menu, icons, About page, and compact UHF data layouts.
+- Added automatic Radar inventory startup and resilient single-tag TID decoding.
+- Added byte-grouped TID/EPC displays and verified EPC fuzzing sequence advancement.
+- Added direct CSV filename prompts with collision-free date-based names.
+- Updated project screenshots for the redesigned tools.
+
 v1.2:
 
 - Added a six-item feature menu after reader detection, with separate Radar and Inventory entries.
