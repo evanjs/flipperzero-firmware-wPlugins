@@ -1206,6 +1206,44 @@ static bool uhf_bytes_to_hex(const uint8_t* data, size_t len, char* out, size_t 
     return true;
 }
 
+static size_t uhf_format_hex_byte_groups(
+    const char* hex,
+    size_t hex_length,
+    size_t byte_offset,
+    size_t max_bytes,
+    char* out,
+    size_t out_size) {
+    if(!hex || !out || out_size == 0U) return 0U;
+
+    size_t written = 0U;
+    size_t bytes = 0U;
+    const size_t start = byte_offset * 2U;
+    while(bytes < max_bytes && start + bytes * 2U + 1U < hex_length) {
+        if(written && written + 1U < out_size) out[written++] = ' ';
+        if(written + 2U >= out_size) break;
+        out[written++] = hex[start + bytes * 2U];
+        out[written++] = hex[start + bytes * 2U + 1U];
+        bytes++;
+    }
+    out[written] = '\0';
+    return bytes;
+}
+
+static void uhf_prune_stale_tags(UhfApp* app, uint32_t max_age_ms) {
+    if(!app || !uhf_data_lock(app, 10)) return;
+
+    const uint32_t now = furi_get_tick();
+    size_t count = 0U;
+    for(size_t i = 0U; i < UHF_MAX_TAGS; i++) {
+        if(app->tags[i].used && (now - app->tags[i].last_seen) > max_age_ms) {
+            memset(&app->tags[i], 0, sizeof(app->tags[i]));
+        }
+        if(app->tags[i].used) count++;
+    }
+    app->tag_count = count;
+    uhf_data_unlock(app);
+}
+
 static bool uhf_is_valid_epc(const uint8_t* epc, size_t epc_len) {
     static const uint8_t reader_placeholder[] = {0xE2U, 0x80U, 0x69U, 0x00U, 0x00U};
 
@@ -2702,7 +2740,7 @@ static void uhf_enter_feature(UhfApp* app, uint8_t feature) {
         app->page = UhfPageRadar;
         app->radar_trail_depth = 0U;
         app->radar_step_tick = furi_get_tick();
-        uhf_set_status(app, "OK Scan; Right Inventory");
+        uhf_start_inventory(app);
         break;
     case 1:
         app->page = UhfPageList;
@@ -2738,16 +2776,18 @@ static void uhf_enter_feature(UhfApp* app, uint8_t feature) {
 
 static void uhf_enter_main_feature(UhfApp* app) {
     if(!app) return;
-
-    const uint8_t feature = app->main_menu_selected;
-    uhf_enter_feature(app, feature);
-    if(feature == 0U && !app->inventory_running) {
-        uhf_start_inventory(app);
-    }
+    uhf_enter_feature(app, app->main_menu_selected);
 }
 
 static void uhf_service_feature_page(UhfApp* app) {
-    if(!app || !app->inventory_running || uhf_count_tags(app) != 1U) return;
+    if(!app || !app->inventory_running) return;
+
+    if(app->page == UhfPageTidDecoder && !app->selected_tid_valid) {
+        /* Inventory keeps a history of EPCs. Expire tags no longer in the RF
+           field so removing all but one tag can continue without re-entering. */
+        uhf_prune_stale_tags(app, 800U);
+    }
+    if(uhf_count_tags(app) != 1U) return;
 
     if(app->page == UhfPageTidDecoder && !app->tid_decode_attempted) {
         app->tid_decode_attempted = true;
@@ -2924,10 +2964,10 @@ static void uhf_draw_tid_decoder(Canvas* canvas, UhfApp* app) {
     }
     canvas_draw_str(canvas, 39, 32, field);
 
-    char byte_label[16];
-    snprintf(byte_label, sizeof(byte_label), "%luB", (unsigned long)(length / 2U));
-
-    const size_t pages = (length + 39U) / 40U;
+    const size_t bytes_per_row = 8U;
+    const size_t bytes_per_page = bytes_per_row * 2U;
+    const size_t byte_length = length / 2U;
+    const size_t pages = (byte_length + bytes_per_page - 1U) / bytes_per_page;
     const size_t page = pages && app->tag_data_scroll_line >= pages ?
         pages - 1U : app->tag_data_scroll_line;
     canvas_draw_rframe(canvas, 0, 40, 128, 24, 3);
@@ -2941,17 +2981,13 @@ static void uhf_draw_tid_decoder(Canvas* canvas, UhfApp* app) {
     }
     canvas_set_font(canvas, FontKeyboard);
     for(size_t row = 0; row < 2U; row++) {
-        const size_t offset = page * 40U + row * 20U;
-        if(offset >= length) break;
-        char part[21];
-        const size_t count = length - offset < 20U ? length - offset : 20U;
-        memcpy(part, tid + offset, count);
-        part[count] = '\0';
+        const size_t byte_offset = page * bytes_per_page + row * bytes_per_row;
+        if(byte_offset >= byte_length) break;
+        char part[24];
+        uhf_format_hex_byte_groups(
+            tid, length, byte_offset, bytes_per_row, part, sizeof(part));
         canvas_draw_str(canvas, 3, 53 + (int)row * 9, part);
     }
-    canvas_set_font(canvas, FontSecondary);
-    const int byte_label_width = canvas_string_width(canvas, byte_label);
-    canvas_draw_str(canvas, 124 - byte_label_width, 62, byte_label);
 }
 
 static void uhf_draw_epc_fuzzing(Canvas* canvas, UhfApp* app) {
@@ -2968,26 +3004,30 @@ static void uhf_draw_epc_fuzzing(Canvas* canvas, UhfApp* app) {
         snprintf(line, sizeof(line), "#: %lu", (unsigned long)app->fuzz_sequence);
         canvas_draw_str(canvas, 2, 20, line);
         const size_t length = strlen(app->selected_epc);
-        if(length <= 60U) {
+        const size_t byte_length = length / 2U;
+        if(byte_length <= 24U) {
             canvas_set_font(canvas, FontKeyboard);
-            for(size_t start = 0U; start < length; start += 20U) {
-                char part[21];
-                const size_t count = length - start < 20U ? length - start : 20U;
-                memcpy(part, app->selected_epc + start, count);
-                part[count] = '\0';
-                canvas_draw_str(canvas, 2, 30 + (int)(start / 20U) * 9, part);
+            for(size_t row = 0U; row < 3U; row++) {
+                const size_t byte_offset = row * 8U;
+                if(byte_offset >= byte_length) break;
+                char part[24];
+                uhf_format_hex_byte_groups(
+                    app->selected_epc, length, byte_offset, 8U, part, sizeof(part));
+                canvas_draw_str(canvas, 2, 30 + (int)row * 9, part);
             }
-            canvas_set_font(canvas, FontSecondary);
         } else {
-            /* Full 48-byte EPC: three rows of 32 compact hexadecimal digits. */
-            for(size_t start = 0U; start < length; start += 32U) {
-                char part[33];
-                const size_t count = length - start < 32U ? length - start : 32U;
-                memcpy(part, app->selected_epc + start, count);
-                part[count] = '\0';
-                uhf_draw_menu_label(canvas, 0, 25 + (int)(start / 32U) * 9, part);
+            /* The compact glyphs are also fixed-width and keep a full 48-byte
+               EPC visible while preserving byte grouping. */
+            for(size_t row = 0U; row < 5U; row++) {
+                const size_t byte_offset = row * 10U;
+                if(byte_offset >= byte_length) break;
+                char part[30];
+                uhf_format_hex_byte_groups(
+                    app->selected_epc, length, byte_offset, 10U, part, sizeof(part));
+                uhf_draw_menu_label(canvas, 2, 23 + (int)row * 7, part);
             }
         }
+        canvas_set_font(canvas, FontSecondary);
     }
     if(app->fuzz_base_epc[0]) {
         uhf_draw_fixed_side_button(canvas, "Clear", false);
@@ -3926,7 +3966,8 @@ static void uhf_handle_input(UhfApp* app, const InputEvent* input) {
         } else if(app->page == UhfPageSettings) {
             if(app->settings_selected < 2U) app->settings_selected++;
         } else if(app->page == UhfPageTidDecoder && app->selected_tid_valid) {
-            const size_t pages = (strlen(app->selected_tid) + 39U) / 40U;
+            const size_t tid_bytes = strlen(app->selected_tid) / 2U;
+            const size_t pages = (tid_bytes + 15U) / 16U;
             if(app->tag_data_scroll_line + 1U < pages) app->tag_data_scroll_line++;
         } else if(app->page == UhfPageEpcFuzzing && app->fuzz_base_epc[0]) {
             if(app->fuzz_sequence > 0U) app->fuzz_sequence--;
