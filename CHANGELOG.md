@@ -1,3 +1,11 @@
+v1.2:
+
+- Added a six-item feature menu after reader detection, with separate Radar and Inventory entries.
+- Added automatic single-tag TID decoding with scrollable MDID, tag model, and raw TID details.
+- Added EPC sequence generation and explicit write/verify controls.
+- Added persistent sound, 0-20 dBm RF output power, and startup-tool settings.
+- Updated the About page for MTools Tec / MTCK.
+
 v1.1:
 
 - Added tag memory actions for reading EPC, TID, and User Data.

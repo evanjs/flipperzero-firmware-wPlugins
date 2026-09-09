@@ -10,6 +10,10 @@ UHF RFID Reader/Writer expansion for Flipper Zero, communicating over UART bridg
 ## Features
 
 - **Inventory Scan** — Fast UHF tag scanning with real-time display
+- **Feature Menu** — Opens after reader detection with six focused entries
+- **TID Decoder** — Automatically pauses on one tag and shows scrollable MDID/model details
+- **EPC Fuzzing** — Generates incremental EPC variants with explicit verified writes
+- **Persistent Settings** — Configure sound, 0–20 dBm RF power, and a startup tool
 - **Paged EPC List** — Browse scanned tags page by page, with truncated preview
 - **Tag Details** — View full EPC, RSSI, and PC (Protocol Control) bits for each tag
 - **Tag Memory Actions** — Read and write EPC, TID, and User Data on compatible tags
@@ -99,10 +103,11 @@ Catalog bundle, updates the Catalog fork, and opens the upstream pull request.
 
 1. Connect your UHF module as described in [Hardware Setup](#hardware-setup)
 2. Open **Apps → GPIO → UHF Expansion**
-3. Press **OK** to start/stop inventory scanning
-4. Navigate the tag list with **Up/Down**
-5. Press **OK** on a tag to view details
-6. Use the submenu to save or clear tag records
+3. Choose **UHF Radar**, **Tag Inventory**, **TID Decoder**, **EPC Fuzzing**, **Settings**, or **About Us**
+4. In UHF Radar or Tag Inventory, press **OK** to start/stop inventory scanning
+5. Navigate the tag list with **Up/Down**
+6. Press **OK** on a tag to view details
+7. Use the submenu to save or clear tag records
 
 ## Protocol
 
