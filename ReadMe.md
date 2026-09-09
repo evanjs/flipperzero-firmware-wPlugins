@@ -121,6 +121,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - ESP Flasher: [Bump Marauder v1.16.0 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.16.0)
 - Updated: [Avocado Zero v0.1.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
 - Updated: [WiFi (Marauder) v0.7.10 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
+- Updated: [Impostor v0.1.3 (By Endika)](https://github.com/Endika/flipper-impostor-game)
 
 <a name="release"></a>
 
