@@ -124,6 +124,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [UHF Expansion v1.3 (By mtoolstec)](https://github.com/mtoolstec/fz-uhf-expansion)
 - Updated: [FlipDeFlock v0.92 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - Updated: [Vexed v1.1 (By dlvoy)](https://github.com/dlvoy/flipper-zero-vexed)
+- Updated: [Swimmy Fish v3.1 (By Invizabel)](https://github.com/Invizabel/fish)
 
 <a name="release"></a>
 
@@ -383,7 +384,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Strategem Zero v0.1 (By nymda)](https://github.com/nymda/StratagemZero)
 - [Sudoku v1.2 (By profelis)](https://github.com/profelis/fz-sudoku)
 - [SUPER-CHIP Emulator (By Milk-Cool)](https://github.com/Milk-Cool/fz-schip)
-- [Swimmy Fish v2.5 (By Invizabel)](https://github.com/Invizabel/fish)
+- [Swimmy Fish v3.1 (By Invizabel)](https://github.com/Invizabel/fish)
 - [T-Rex Runner v1.5 (By Rrycbarm)](https://github.com/Rrycbarm/t-rex-runner)
 - [TAMA P1: Save State & Layout Update (By DroomOne)](https://github.com/DroomOne/flipperzero-tamagotch-p1)
 - [Tanks v1.4 (By Alexgr13)](https://github.com/alexgr13/flipperzero-firmware/tree/fork/dev/applications/tanks-game)
