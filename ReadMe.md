@@ -79,7 +79,6 @@ This software is for experimental purposes only and is not meant for any illegal
 - HID: [Mouse Jiggler (Stealth) - movement is now generated within the signed 8-bit range that HID mouse reports carry, instead of a +-1000 value that was truncated before it was sent (By MNeroba)](https://github.com/DarkFlippers/unleashed-firmware/pull/1111)
 - Expansion: [Fixed an off-by-one that accepted FuriHalSerialIdMax itself as a serial id when setting an expansion module callback (By MNeroba)](https://github.com/DarkFlippers/unleashed-firmware/pull/1108)
 - Added: [API Caller v0.1.4 (By todotge)](https://github.com/todotge/Flipper-api-caller)
-- ESP Flasher: [Bump Marauder v1.15.1 +1 DAY (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/nightly_91724fd)
 - Added: [DNDolphins v3.0 (By RogueMaster)](https://github.com/RogueMaster/Dungeons_and_Dolphins)
 - Added: [DNDBestiary v3.0 (By RogueMaster)](https://github.com/RogueMaster/Dungeons_and_Dolphins)
 - Updated: [UHF Expansion v1.1 (By mtoolstec)](https://github.com/mtoolstec/fz-uhf-expansion)
@@ -119,6 +118,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Flipcraft v2.6 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 - Updated: [Fake Chip Detector v0.8 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 - Updated: [NFC Stock Manager Alpha v0.1.6 (By Endika)](https://github.com/Endika/flipper-nfc-stock)
+- ESP Flasher: [Bump Marauder v1.16.0 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.16.0)
 
 <a name="release"></a>
 
@@ -148,7 +148,7 @@ This software is for experimental purposes only and is not meant for any illegal
 ## New on MNTM RM Branch!
 
 - TLDR: More Assets, Game Mode, RM Passport & Many more apps! Extra NFC, RFID & SubGHz features!
-- ESP Flasher: [Comes with Marauder v1.15.1 +1 DAY (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/nightly_91724fd)
+- ESP Flasher: [Comes with Marauder v1.16.0 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.16.0)
 - Animations: [Asset Packs for RM HERE](https://github.com/RogueMaster/awesome-flipperzero-withModules/tree/rogue_main/RM_AssetPacks)
 - Animations: [PREVIEW "RM Minimal" animations (build default)](https://www.patreon.com/posts/animation-rm-77441581) or [OTHER SETS](https://www.patreon.com/RogueMaster?filters[tag]=Animations)
 - Archive: Open MP3 from File Browser, thanks to [MP3 Player v3.5 (By coolshrimp)](https://github.com/coolshrimp/flipperzero-mp3-player)
