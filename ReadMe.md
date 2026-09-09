@@ -121,7 +121,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Avocado Zero v0.1.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
 - Updated: [WiFi (Marauder) v0.7.10 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
 - Updated: [Impostor v0.1.3 (By Endika)](https://github.com/Endika/flipper-impostor-game)
-- Updated: [Fake Chip Detector v0.11 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
+- Updated: [Fake Chip Detector v0.13 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 
 <a name="release"></a>
 
@@ -548,7 +548,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Evil BW16 Controller v1.0 (By dagnazty)](https://github.com/dagnazty/Flipper_Apps)
 - [Evil Portal v0.6 (By bigbrodude6119)](https://github.com/bigbrodude6119/flipper-zero-evil-portal)
 - [Eye Saver v0.1 (By paul-sopin)](https://github.com/paul-sopin/flipper-eye-saver)
-- [Fake Chip Detector v0.11 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
+- [Fake Chip Detector v0.13 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 - [FAP Boilerplate v1.3 (By leedave)](https://github.com/leedave/flipper-zero-fap-boilerplate)
 - [Faraday v1.2 (By at0m-b0mb)](https://github.com/at0m-b0mb/Faraday-FlipperZero)
 - [FCC ID Lookup v0.1 (By lrehmann)](https://github.com/lrehmann/fcc-id-lookup-flipper)

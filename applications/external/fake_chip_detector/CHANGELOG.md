@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13 — beta
+
+- **Two drawing fixes from xMasterX**, found running the app on a Flipper with nothing wired to
+  the I2C pins and sent as a patch on the Apps Catalog pull request. The Right-key glyph on the
+  save log, details and find out bars spans seven rows around the y it is given, so the y it was
+  drawn at put its last row one below the bottom of a 64-row screen and cut the tip off the
+  arrow. And on the pad meter the title and the key hint were drawn at the same height from
+  opposite edges with nothing checking they fit, so **Pad reads FLOATING** ran straight through
+  **save**. The hint is drawn first now and the title fitted to the room left over, so no title
+  can overlap it again — and the titles are shorter, which means none of them has to be.
+
+## 0.12 — beta
+
+- **The QMC5883L has a live test now.** It is the die a GY-271 board most often carries, and the
+  one this app could identify and then say nothing more about. The test asks the field to move by
+  240 counts on two different axes while the board is turned, and that is its only claim. There is
+  no self-test half, because this part has no self-test: its second control register holds a soft
+  reset, a pointer-roll bit and an interrupt enable and nothing else, so there is no coil to fire
+  on command. The threshold is arithmetic off the datasheet's sensitivity figure — sixteen per
+  cent of what turning a board end over end reaches at the weakest place on earth, and forty times
+  the noise its own resolution figure implies — and it has never been compared against a still
+  part. No QMC5883L has been on the bench at all: the board that prompted the work carries a P.
+  Sixteen live tests now, thirteen of which have never met the chip they were written for.
+
 ## 0.11 — beta
 
 - **The QMC5883P live test now waits for the part instead of racing it.** Its measurement loop
