@@ -119,6 +119,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Fake Chip Detector v0.8 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 - Updated: [NFC Stock Manager Alpha v0.1.6 (By Endika)](https://github.com/Endika/flipper-nfc-stock)
 - ESP Flasher: [Bump Marauder v1.16.0 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.16.0)
+- Updated: [Avocado Zero v0.1.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
 
 <a name="release"></a>
 
@@ -237,7 +238,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Arduventure v2.0 (By apfxtech)](https://github.com/apfxtech/FlipperArduventure)
 - [Arkanoid v1.3 (By gotnull)](https://github.com/gotnull/flipperzero-firmware-wPlugins)
 - [Asteroids v1.3 (By antirez)](https://github.com/antirez/flipper-asteroids)
-- [Avocado Zero v0.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
+- [Avocado Zero v0.1.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
 - [Banana v0.4 (By DrEverr)](https://github.com/DrEverr/FlipperApps)
 - [Blackjack v0.1 (By RocketGod)](https://github.com/RocketGod-Git/Flipper-Zero-Blackjack)
 - [BlackJack v1.1 (By teeebor)](https://github.com/teeebor/flipper_games)
