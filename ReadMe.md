@@ -122,7 +122,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Impostor v0.1.3 (By Endika)](https://github.com/Endika/flipper-impostor-game)
 - Updated: [Fake Chip Detector v0.13 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 - Updated: [UHF Expansion v1.3 (By mtoolstec)](https://github.com/mtoolstec/fz-uhf-expansion)
-- Updated: [Vexed v1.1 (By dlvoy)](https://github.com/dlvoy/flipper-zero-vexed)
+- Updated: [Vexed v1.1 (By dlvoy)](https://github.com/dlvoy/flipper-zero-vexed) (Version Only)
 - Updated: [Swimmy Fish v3.1 (By Invizabel)](https://github.com/Invizabel/fish)
 - Updated: [FlipDeFlock v0.95 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 
