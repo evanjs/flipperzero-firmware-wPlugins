@@ -118,13 +118,13 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [NFC Stock Manager Alpha v0.1.6 (By Endika)](https://github.com/Endika/flipper-nfc-stock)
 - ESP Flasher: [Bump Marauder v1.16.0 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.16.0)
 - Updated: [Avocado Zero v0.1.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
-- Updated: [WiFi (Marauder) v0.7.10 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
 - Updated: [Impostor v0.1.3 (By Endika)](https://github.com/Endika/flipper-impostor-game)
 - Updated: [Fake Chip Detector v0.13 (By hleserg)](https://github.com/hleserg/flipper-fake-chip-detector)
 - Updated: [UHF Expansion v1.3 (By mtoolstec)](https://github.com/mtoolstec/fz-uhf-expansion)
 - Updated: [Vexed v1.1 (By dlvoy)](https://github.com/dlvoy/flipper-zero-vexed) (Version Only)
 - Updated: [Swimmy Fish v3.1 (By Invizabel)](https://github.com/Invizabel/fish)
 - Updated: [FlipDeFlock v0.95 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
+- Updated: [WiFi (Marauder) v0.7.11 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
 
 <a name="release"></a>
 
@@ -994,7 +994,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [WHC SWIO Flasher v1.1 (By sukvojte)](https://github.com/sukvojte/wch_swio_flasher)
 - [Wiegand Reader v1.4 (By jamisonderek)](https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/gpio)
 - [WiFi (Deauther) V2 (By Timmotools)](https://github.com/Timmotools/flipperzero_esp8266_deautherv2) `Req: ESP8266`
-- [WiFi (Marauder) v0.7.10 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion) `Req: ESP32` with [ESP32 MARAUDER Firmware](https://github.com/justcallmekoko/ESP32Marauder/releases/latest)
+- [WiFi (Marauder) v0.7.11 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion) `Req: ESP32` with [ESP32 MARAUDER Firmware](https://github.com/justcallmekoko/ESP32Marauder/releases/latest)
 - [Wifi Internet Watch v1.2 (By DruzhininPavel)](https://github.com/DruzhininPavel/wifi-internet-watch-flipper) `Req: ESP32`
 - [Wifi Mapping (By carvilsi)](https://github.com/carvilsi/flipper0-wifi-map/tree/main) `Req: ESP32`
 - [Wii EC Analyzer v1.1 (By csBlueChip)](https://github.com/csBlueChip/FlipperZero_WiiEC)
