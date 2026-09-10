@@ -607,6 +607,38 @@ void recon_app_survey_add(
         if(rssi > e->rssi || e->rssi == 0) e->rssi = rssi;
     }
     furi_mutex_release(app->mutex);
+
+    // THE SURVEY IS THE ONLY PLACE A LEARNED FINGERPRINT CAN EVER FIRE.
+    //
+    // The companion scores on OUI and SSID alone and returns early on conf == 0
+    // (flock_companion.ino), and it computes the IE fingerprint AFTER that gate.
+    // So a camera on a randomised or unlisted address is dropped on the ESP and
+    // never reaches this side at all -- which meant a fingerprint from
+    // signatures.json or learned.txt could only ever match a device we had
+    // already recognised some other way. It could not fire on the one class of
+    // device it exists for, and no amount of teaching would change that.
+    //
+    // The survey is not gated: the companion records every wildcard-probe
+    // emitter, matched or not, and ships it on request. So the fingerprint the
+    // operator taught us gets its comparison here, against the only feed that
+    // carries the devices in question.
+    //
+    // Done AFTER the unlock: recon_app_report_flock takes the same mutex and it
+    // is not recursive.
+    // A PINNED ADDRESS lands here for the same reason a fingerprint does: the
+    // camera it exists for has no vendor prefix, so the companion never forwards
+    // it and the survey is the only feed carrying it.
+    FlockConfidence fp_conf = flock_ie_fp_confidence(fp, mac);
+    FlockConfidence pin_conf = flock_mac_pin_confidence(mac);
+    if(pin_conf > fp_conf) fp_conf = pin_conf;
+    if(fp_conf != FlockConfidenceNone) {
+        // 'F' is the "probe-fp" source label, matching what the companion-line
+        // parser stamps on a fingerprint match. No SSID, because a survey row has
+        // none, and no class beyond the ALPR default, because a fingerprint says
+        // "this stack" and never "this kind of device".
+        recon_app_report_flock(
+            app, mac, "", rssi, channel, 'F', fp_conf, fp, FlockClassAlpr, false);
+    }
 }
 
 void recon_survey_save(ReconApp* app) {
@@ -651,7 +683,74 @@ void recon_survey_save(ReconApp* app) {
     }
     storage_file_close(file);
     storage_file_free(file);
+
+    recon_survey_log_append(app, storage);
     furi_record_close(RECORD_STORAGE);
+}
+
+void recon_survey_log_append(ReconApp* app, void* storage_rec) {
+    Storage* storage = storage_rec;
+    // Nothing to add. An empty session is still recorded, in diag.csv, which is
+    // the file that answers "did it run"; a session column with no rows under it
+    // would only repeat that.
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    size_t count = app->survey_count;
+    uint32_t session = app->survey_session_epoch;
+    furi_mutex_release(app->mutex);
+    if(!count) return;
+
+    // Rotate BEFORE appending, so the write that crosses the cap still lands in
+    // the fresh file rather than being the last thing squeezed into a full one.
+    // One generation only: the bound matters more than deep history, and the
+    // recent drives are the ones anybody goes back to.
+    File* probe = storage_file_alloc(storage);
+    bool rotate = false;
+    if(storage_file_open(probe, RECON_SURVEY_LOG_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        rotate = storage_file_size(probe) >= RECON_SURVEY_LOG_MAX;
+    }
+    storage_file_close(probe);
+    storage_file_free(probe);
+    if(rotate) {
+        storage_simply_remove(storage, RECON_SURVEY_LOG_OLD_PATH);
+        storage_common_rename(storage, RECON_SURVEY_LOG_PATH, RECON_SURVEY_LOG_OLD_PATH);
+    }
+
+    File* file = storage_file_alloc(storage);
+    if(storage_file_open(file, RECON_SURVEY_LOG_PATH, FSAM_WRITE, FSOM_OPEN_APPEND)) {
+        FuriString* out = furi_string_alloc();
+        if(storage_file_size(file) == 0) {
+            furi_string_cat_str(
+                out,
+                "# FlipDeFlock survey log -- every session appended, newest last\n"
+                "# session = scan start, as a unix time. Counts are PER SESSION, never\n"
+                "# since the board booted, so they stay comparable within one row group.\n"
+                "# No SSID and no position, same as survey.csv.\n"
+                "session,mac,rssi,channel,ie_fp,count\n");
+        }
+        furi_mutex_acquire(app->mutex, FuriWaitForever);
+        for(size_t i = 0; i < app->survey_count; i++) {
+            SurveyEntry* e = &app->survey[i];
+            furi_string_cat_printf(
+                out,
+                "%lu,%02X:%02X:%02X:%02X:%02X:%02X,%d,%u,%08lx,%u\n",
+                (unsigned long)session,
+                e->mac[0],
+                e->mac[1],
+                e->mac[2],
+                e->mac[3],
+                e->mac[4],
+                e->mac[5],
+                e->rssi,
+                e->channel,
+                (unsigned long)e->fp,
+                (unsigned)e->count);
+        }
+        furi_mutex_release(app->mutex);
+        storage_file_write(file, furi_string_get_cstr(out), furi_string_size(out));
+        furi_string_free(out);
+    }
+    storage_file_close(file);
+    storage_file_free(file);
 }
 
 void recon_app_set_esp_dropped(ReconApp* app, uint32_t dropped) {
@@ -1265,6 +1364,29 @@ void recon_diag_begin(ReconApp* app) {
     furi_mutex_release(app->mutex);
 }
 
+/**
+ * True when diag.csv's first line is the CURRENT schema header, or the file does
+ * not exist yet. False means it was written under an older column set and must
+ * be rotated aside before anything new is appended.
+ */
+static bool recon_diag_header_current(Storage* storage) {
+    const char* want = RECON_DIAG_HEADER_LINE;
+    size_t want_len = strlen(want);
+    File* file = storage_file_alloc(storage);
+    bool current = true; // absent file -> nothing to rotate
+    if(storage_file_open(file, RECON_DIAG_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        if(storage_file_size(file) > 0) {
+            char buf[96];
+            size_t n = want_len < sizeof(buf) ? want_len : sizeof(buf);
+            size_t got = storage_file_read(file, buf, (uint16_t)n);
+            current = (got == n) && (memcmp(buf, want, n) == 0);
+        }
+    }
+    storage_file_close(file);
+    storage_file_free(file);
+    return current;
+}
+
 void recon_diag_save(ReconApp* app) {
     // Never write a row for a session that never started (the Main Menu calls
     // scan_session_stop() on entry, including the one at launch).
@@ -1302,12 +1424,29 @@ void recon_diag_save(ReconApp* app) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_common_mkdir(storage, RECON_APP_FOLDER);
     File* file = storage_file_alloc(storage);
+    // ROTATE A STALE SCHEMA ASIDE FIRST.
+    //
+    // The header is only written when the file is empty, so a diag.csv created
+    // under an older schema kept that header forever while the ROWS below it
+    // changed shape. This project's own card ended up with a v1 header over a
+    // mix of 19- and 20-column rows, and anyone parsing it by the header -- which
+    // is the only thing a reader has -- mis-assigns every column after the
+    // version. That is not hypothetical: it happened while reading a field
+    // report, and the wrong reading survived several rounds of analysis.
+    //
+    // If the existing header is not the current one, move the whole file to
+    // diag.old.csv and start fresh. Nothing is destroyed, one generation back is
+    // kept, and every file that exists afterwards is internally consistent.
+    if(!recon_diag_header_current(storage)) {
+        storage_simply_remove(storage, RECON_DIAG_OLD_PATH);
+        storage_common_rename(storage, RECON_DIAG_PATH, RECON_DIAG_OLD_PATH);
+    }
     if(storage_file_open(file, RECON_DIAG_PATH, FSAM_WRITE, FSOM_OPEN_APPEND)) {
         FuriString* s = furi_string_alloc();
         if(storage_file_size(file) == 0) {
             furi_string_cat_str(
                 s,
-                "# FlipDeFlock session diagnostics v2 -- counts only, no MAC/SSID/position\n"
+                RECON_DIAG_HEADER_LINE
                 "start,end,dur_s,ver,esp_ver,backend,band_req,band_act,band_ch,proto,"
                 "esp_lines,esp_dropped,esp_reboots,esp_frames,esp_hits,"
                 "reports,accepted,rej_conf,rej_full,table\n");

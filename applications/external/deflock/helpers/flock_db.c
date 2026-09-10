@@ -952,6 +952,38 @@ FlockIeFp flock_ie_fp_match(uint32_t fp) {
     return FlockIeFpNone;
 }
 
+bool flock_user_mac_match(const uint8_t* mac) {
+    if(!mac || !g_extras || !g_extras->macs) return false;
+    for(size_t i = 0; i < g_extras->mac_count; i++) {
+        if(memcmp(g_extras->macs[i], mac, 6) == 0) return true;
+    }
+    return false;
+}
+
+FlockConfidence flock_mac_pin_confidence(const uint8_t* mac) {
+    return flock_user_mac_match(mac) ? FlockConfidenceProbeFp : FlockConfidenceNone;
+}
+
+FlockConfidence flock_ie_fp_confidence(uint32_t fp, const uint8_t* mac) {
+    switch(flock_ie_fp_match(fp)) {
+    case FlockIeFpBuiltin:
+        // Verified compiled-in class fingerprint. On a Flock OUI that is two
+        // independent tells agreeing, which is the one path a fingerprint may
+        // confirm on. The table ships empty, so this is currently unreachable.
+        return (mac && flock_oui_match(mac)) ? FlockConfidenceConfirmed : FlockConfidenceProbeFp;
+    case FlockIeFpCandidate:
+    case FlockIeFpUser:
+        // Single-source built-in, signatures.json, or something the operator
+        // taught us. Capped at "Class?" even on a Flock OUI: the operator's eyes
+        // are evidence about a camera and no evidence about which row in a list
+        // emitted which packet.
+        return FlockConfidenceProbeFp;
+    case FlockIeFpNone:
+    default:
+        return FlockConfidenceNone;
+    }
+}
+
 /*
  * flock_score() USED TO LIVE HERE and was deleted in v0.48.
  *
@@ -993,6 +1025,10 @@ FlockMethod flock_method_of(const uint8_t* mac, const char* ssid, char ftype, ui
     // so the label never claims more than the confidence rung does.
     if(flock_ssid_confidence(ssid) != FlockConfidenceNone) return FlockMethodSsid;
     if(flock_ie_fp_match(ie_fp) != FlockIeFpNone) return FlockMethodIeFp;
+    // The operator pinned this exact address after looking at it. More specific
+    // than any prefix, and the only thing that can name a camera whose invented
+    // address is stable but belongs to no vendor.
+    if(flock_user_mac_match(mac)) return FlockMethodPin;
     // ANY vendor table, not just Flock's: a SoundThinking, Axon, Ubicquia,
     // Motorola, Verkada, Genetec or Avigilon prefix is an OUI match too, just for
     // another vendor or device class. Reporting one as "unclassified" would hide
@@ -1019,6 +1055,8 @@ const char* flock_method_str(FlockMethod method) {
         return "SSID";
     case FlockMethodIeFp:
         return "IE fp";
+    case FlockMethodPin:
+        return "pinned addr";
     case FlockMethodOui:
         return "OUI";
     case FlockMethodBle:

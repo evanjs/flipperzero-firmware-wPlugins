@@ -3,6 +3,7 @@
 #include "flock_store.h"
 #include "report_escape.h" // csv_field_escape (the write direction)
 #include "report_fmt.h" // fmt_mac / fmt_coord
+#include "flock_db.h" // flock_ie_fp_is_generic
 
 #include <math.h>
 #include <stdio.h>
@@ -274,6 +275,14 @@ bool flock_store_parse_line(const char* line, FlockStoreRec* out) {
         unsigned long h = strtoul(f[6], &end, 16);
         if(!end || *end != '\0') return false;
         r.ie_fp = (uint32_t)h;
+        // A fingerprint since discredited as a commodity scan pattern is dropped
+        // on the way in. The ROW stays -- it is the operator's record of a real
+        // sighting and deleting their history is not ours to do -- but the hash
+        // stops being shown as the reason for it, and flock_method_of() then
+        // re-derives an honest method instead of claiming "IE fp". Without this
+        // the denylist only ever protected NEW sightings, and any card carrying
+        // one from before kept displaying it as evidence forever.
+        if(flock_ie_fp_is_generic(r.ie_fp)) r.ie_fp = 0;
     }
 
     if(!fs_parse_coord(f[7], &r.lat)) return false;

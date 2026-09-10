@@ -73,12 +73,38 @@ typedef enum {
 // list, and every counter that could tell them apart was live-only and died with
 // the session. v0.79-v0.83 shipped without this and cost two operators a drive.
 #define RECON_DIAG_PATH     RECON_APP_FOLDER "/diag.csv"
+// Bump this string whenever the diag COLUMNS change. It is compared against the
+// first line of an existing diag.csv, and a mismatch rotates the old file to
+// diag.old.csv rather than appending rows of a new shape under an old header --
+// which is what produced a file nobody could parse correctly. See recon_diag_save().
+#define RECON_DIAG_HEADER_LINE \
+    "# FlipDeFlock session diagnostics v2 -- counts only, no MAC/SSID/position\n"
+#define RECON_DIAG_OLD_PATH       RECON_APP_FOLDER "/diag.old.csv"
 // Every wildcard-probe transmitter seen during a session, MATCHED OR NOT.
 // Exists because "83,916 frames, zero candidates" is the one result the detector
 // cannot explain: a camera on an OUI we do not carry, or one using a randomised
 // MAC, looks exactly like an empty street. Park next to a camera you can see and
 // the row with a huge count is it, whatever its OUI turns out to be.
-#define RECON_SURVEY_PATH   RECON_APP_FOLDER "/survey.csv"
+#define RECON_SURVEY_PATH         RECON_APP_FOLDER "/survey.csv"
+// The same rows, APPENDED across sessions instead of replacing them.
+//
+// survey.csv is deliberately a fresh snapshot of the last scan and must stay
+// that way: counts are per session, and a row from a different street would be
+// actively misleading while hunting one camera. But that also means a stop is
+// destroyed the moment the next scan ends, and a field report of several stops
+// survived only because the operator happened to copy the file to their phone
+// between them. Data that took a drive to collect should not depend on that.
+//
+// Each row carries the session it came from, so stops stay separable while a
+// whole drive is still one file to send. An empty session adds nothing here on
+// purpose -- diag.csv is the per-session record of "it ran", and a row saying
+// only that would duplicate it.
+#define RECON_SURVEY_LOG_PATH     RECON_APP_FOLDER "/survey_log.csv"
+// Rotated to survey_log.old.csv past this, so the log is bounded at roughly
+// twice it and the most recent drives always survive. ~2800 rows, i.e. dozens of
+// drives; a session contributes at most RECON_SURVEY_MAX.
+#define RECON_SURVEY_LOG_MAX      131072u
+#define RECON_SURVEY_LOG_OLD_PATH RECON_APP_FOLDER "/survey_log.old.csv"
 
 /** ViewDispatcher view indexes. */
 typedef enum {
@@ -555,6 +581,10 @@ typedef struct {
     SurveyEntry survey[RECON_SURVEY_MAX];
     size_t survey_count;
     uint32_t survey_last_poll; /**< tick of the last `survey` request */
+    /** Wall clock at scan start, the session column in survey_log.csv. Its own
+     *  field rather than diag_start_epoch, which recon_diag_save() zeroes before
+     *  recon_survey_save() runs. */
+    uint32_t survey_session_epoch;
     bool esp_proto_mismatch; /**< companion speaks a different protocol version than the app */
     uint32_t esp_dropped_lines; /**< overlong RX lines dropped whole (wire-protocol health metric) */
     uint8_t esp_link_state; /**< EspLinkState: Stopped / Running / PortBusy (R6 error surface) */
@@ -720,6 +750,15 @@ void recon_app_survey_add(
 
 /** Write survey.csv. Counts and signatures only -- no SSID, no position. */
 void recon_survey_save(ReconApp* app);
+
+/**
+ * Append this session's survey rows to survey_log.csv, rotating past the cap.
+ *
+ * Called by recon_survey_save() with the Storage record already open, which is
+ * why the parameter is a void* -- recon_app_i.h is included by pure-logic
+ * helpers that must not pull in the storage headers. No-op for an empty session.
+ */
+void recon_survey_log_append(ReconApp* app, void* storage_rec);
 
 /** Ask the companion for its survey on an interval (see RECON_SURVEY_PATH). */
 void recon_survey_tick(ReconApp* app);
