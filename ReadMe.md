@@ -96,7 +96,6 @@ This software is for experimental purposes only and is not meant for any illegal
 - Added: [DNDJournal v3.2.31 (By RogueMaster)](https://github.com/RogueMaster/Dungeons_and_Dolphins)
 - Added: [DNDInventory v3.3.8 (By RogueMaster)](https://github.com/RogueMaster/Dungeons_and_Dolphins)
 - Added: [DNDSpellbook v3.3.8 (By RogueMaster)](https://github.com/RogueMaster/Dungeons_and_Dolphins)
-- Updated: [Hotspot Arcade v1.9.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
 - Updated: [Cross Remote v3.5 (By leedave)](https://github.com/leedave/flipper-zero-cross-remote)
 - Updated: [Specter v2.8 (By at0m-b0mb)](https://github.com/at0m-b0mb/Specter-FlipperZero)
 - Updated: [Tesla Mod v2.16b27 (By hypery11)](https://github.com/hypery11/flipper-tesla-fsd)
@@ -125,6 +124,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Swimmy Fish v3.1 (By Invizabel)](https://github.com/Invizabel/fish)
 - Updated: [FlipDeFlock v0.95 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - Updated: [WiFi (Marauder) v0.7.11 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
+- Updated: [Hotspot Arcade v1.10.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
 
 <a name="release"></a>
 
@@ -312,7 +312,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Heap Defence v1.4 (By xMasterX)](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/commit/fc776446de9fdd553b221c02668b925b689378d8)
 - [Hirn - Crack Color Codes v0.2 (By fgreil)](https://github.com/fgreil/mitzi-hirn)
 - [Hold em v1.1 (By code-phreak)](https://github.com/code-phreak/flipper-holdem)
-- [Hotspot Arcade v1.9.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
+- [Hotspot Arcade v1.10.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
 - [Hunter Killer v1.0 (By josephburnett)](https://github.com/josephburnett/hunter-flipper)
 - [Impostor v0.1.3 (By Endika)](https://github.com/Endika/flipper-impostor-game)
 - [Infinite Tic Tac Toe v0.1 (By kdiller713)](https://github.com/kdiller713/public-FlipperApps/tree/main/infinite_tic_tac_toe)
