@@ -1,3 +1,6 @@
+v2.8:
+Seas and rivers with Minecraft-style flowing water, swimming and an underwater view, terrain presets on the world creation screen (normal, flat, superflat, dense woods), chain-detonating dynamite with blast knockback, explosions no longer destroy water, baked sun shadows removed, removed Herobrine
+
 v2.6:
 World creation form with per-world gamemode/mobs/shaders/draw distance, traced sun shadows drawn as outlines, glass frame inverts the view behind it, centered crosshair with precise block and mob aiming, bedrock jump/placement fixes, shadow bakes carried across rebuilds with faster sun rays, chunk streaming in file order with idle flushes, smaller RAM image
 

@@ -113,7 +113,6 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Sub Duplicate Finder v1.2.2 (By Endika)](https://github.com/Endika/flipper-sub-dup)
 - Updated: [Quac! v0.10.0 (By rdefeo)](https://github.com/rdefeo/quac)
 - Updated: [Gurpil v0.1.9 (By Endika)](https://github.com/Endika/flipper-gurpil)
-- Updated: [Flipcraft v2.6 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 - Updated: [NFC Stock Manager Alpha v0.1.6 (By Endika)](https://github.com/Endika/flipper-nfc-stock)
 - ESP Flasher: [Bump Marauder v1.16.0 (By justcallmekoko)](https://github.com/justcallmekoko/ESP32Marauder/releases/tag/v1.16.0)
 - Updated: [Avocado Zero v0.1.1 (By Endika)](https://github.com/Endika/flipper-avocado-zero)
@@ -126,6 +125,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [Hotspot Arcade v1.10.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
 - OFW: [Disable license expiration check in PVS options & update PR template- #4445 (By xMasterX)](https://github.com/flipperdevices/flipperzero-firmware/pull/4445)
 - Updated: [FlipDeFlock v0.97 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
+- Updated: [Flipcraft v2.8 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 
 <a name="release"></a>
 
@@ -291,7 +291,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [Five Nights at Flippers v1.3 (By sillygir1)](https://github.com/sillygir1/flipperzero-fnaf)
 - [Flappy Bird v1.5 (By DroomOne)](https://github.com/DroomOne/flipperzero-firmware/tree/dev/applications/flappy_bird)
 - [Flight Assault v0.4 (By evillero)](https://github.com/evillero/flight_assault)
-- [Flipcraft v2.6 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
+- [Flipcraft v2.8 (By apfxtech)](https://github.com/apfxtech/Flipcraft)
 - [Flipper Hero v1.4 (By mentoster)](https://github.com/mentoster/Flipper-hero)
 - [Flippy Road v1.1 (By rkilpadi)](https://github.com/rkilpadi/flippy-road)
 - [FlipRogue v1.2.1 (By Abzac)](https://github.com/Abzac/fliprogue)
