@@ -1,5 +1,10 @@
 // Copyright (c) 2026 ApertureFox Technology. MIT License.
-//   c++ -std=c++17 -O2 -o /tmp/hostgen tools/hostgen.cpp
+//   c++ -std=c++17 -O2 -ffp-contract=off -o /tmp/hostgen tools/hostgen.cpp
+//
+// -ffp-contract=off is not optional: the firmware's arm-none-eabi-gcc emits
+// plain vmul/vadd, so the device -- and tools/worldgen.py, which mirrors it --
+// round every product separately. Let clang fuse a*b+c here and a column
+// sitting exactly on a rounding boundary comes out one block higher.
 //   /tmp/hostgen out.fcw 16 12345 0 1  # chunks per side: 16/32/64/128, the
 //                                      # header flags byte, then the terrain
 //                                      # preset 0..3 (plugin_api.h)
