@@ -217,8 +217,7 @@ Which one depends on whether you know your board:
   firmware. Much smaller, and a much faster first launch. The board picker only offers the
   board that is actually in the download.
 
-Do not install more than one. They are the same app, so they share one folder on the SD
-card and would re-unpack over each other on every launch.
+Do not install more than one - they all show up as the same app.
 
 > **First launch takes a while**, and longer for `-all`. The .fap carries its bundled
 > content (board firmware, the web bundle, the packs) and the Flipper unpacks it to the SD
@@ -279,11 +278,18 @@ arduino-cli compile --fqbn esp32:esp32:esp32c5:PartitionScheme=huge_app,CDCOnBoo
 **3. Flipper app** — use the wrapper, not bare `ufbt`: it refreshes the bundled firmware
 images, web bundle, and content packs inside `assets/` before packaging.
 ```sh
-tools/build-fap.sh                         # -> dist/hotspot_arcade.fap
+tools/build-fap.sh                         # -> dist/hotspot_arcade-all.fap
 python3 tools/deploy-to-flipper.py --port /dev/cu.usbmodemflip_XXXX
 ```
+
+To build board specific .faps with this method, use this syntax.
+```sh
+BOARD=wroom tools/build-fap.sh              # -> dist/hotspot_arcade-wroom.fap
+python3 tools/deploy-to-flipper.py --port /dev/cu.usbmodemflip_XXXX --fap flipper/hotspot-arcade/dist/hotspot_arcade-wroom.fap
+```
+
 The deploy script pushes the fap to `/ext/apps/GPIO/` and your working copies of the web
-bundle and content packs to `/ext/apps_data/hotspot_arcade/`, where they override the
+bundle and content packs to `/ext/apps_data/[fap_name]/`, where they override the
 bundled ones — so you can iterate on the web client without rebuilding the fap.
 
 ## Development

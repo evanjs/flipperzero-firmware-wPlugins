@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Hotspot Arcade .fap with the ESP firmware bundled inside it.
 #
-# The .fap ships the ESP32-S2 firmware images via fap_file_assets (see
+# The .fap ships the ESP32 firmware images via fap_file_assets (see
 # application.fam): the loader extracts them to /ext/apps_assets/hotspot_arcade/ on
 # launch, so a fresh install of just the .fap makes "Install Firmware" work with no
 # SD setup. Firmware images are build artifacts, so this wrapper regenerates them
@@ -14,7 +14,9 @@
 # If arduino-cli isn't available it falls back to the already-built images in
 # esp32/hotspot-arcade-fw/build/ (and errors if those are missing too).
 #
-# Usage: tools/build-fap.sh
+# Usage: 
+#   tools/build-fap.sh
+#   BOARD=wroom tools/build-fap.sh   # single-board variant (s2|wroom|c5)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,6 +49,32 @@ BOARDS=(
     "esp32:esp32:esp32|wroom"
     "esp32:esp32:esp32c5:PartitionScheme=huge_app,CDCOnBoot=default|c5"
 )
+
+BOARD="${BOARD:-all}"
+
+board_subdir() {
+    case "$1" in
+        s2)    echo "official_devboard" ;;
+        wroom) echo "wroom" ;;
+        c5)    echo "c5" ;;
+        *)
+            echo "ERROR: unknown BOARD '$1' (want: s2, wroom, c5, or all)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+if [ "$BOARD" != "all" ]; then
+    WANT_SUBDIR="$(board_subdir "$BOARD")"
+    # Filter BOARDS down to just the requested one so the arduino-cli loop below
+    # never touches the other two boards at all (no wasted compiles).
+    filtered=()
+    for entry in "${BOARDS[@]}"; do
+        IFS='|' read -r _ subdir _ <<< "$entry"
+        [ "$subdir" = "$WANT_SUBDIR" ] && filtered+=("$entry")
+    done
+    BOARDS=("${filtered[@]}")
+fi
 
 # Short tag used in the flashed filenames, per assets subdir. The Flipper shows the
 # filename while flashing, and "hotspot-arcade-fw.ino.bootloader.bin" is far wider
@@ -112,6 +140,32 @@ find_boot_app0() {
     return 1
 }
 # boot_app0 is resolved per board below, since they can build against different cores.
+
+# if a single-board build, set aside assets/firmware/ for the other boards; move the other boards' directories to a temp holding dir and move them back on exit
+STASH_DIR=""
+restore_stashed_boards() {
+    [ -n "$STASH_DIR" ] && [ -d "$STASH_DIR" ] || return 0
+    for dir in "$STASH_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        d="$(basename "$dir")"
+        rm -rf "$ASSETS_FW/$d"
+        mv "$dir" "$ASSETS_FW/$d"
+    done
+    rmdir "$STASH_DIR" 2>/dev/null || true
+}
+trap restore_stashed_boards EXIT
+
+if [ "$BOARD" != "all" ]; then
+    echo "==> Building single-board variant: $BOARD ($WANT_SUBDIR)"
+    if [ -d "$ASSETS_FW" ]; then
+        STASH_DIR="$(mktemp -d)"
+        for dir in "$ASSETS_FW"/*/; do
+            [ -d "$dir" ] || continue
+            d="$(basename "$dir")"
+            [ "$d" = "$WANT_SUBDIR" ] || mv "$dir" "$STASH_DIR/$d"
+        done
+    fi
+fi
 
 # --- build each board and populate assets/firmware/<subdir>/ ---
 # flash_official.txt / flash_wroom.txt are committed as the source of truth; only the
@@ -232,4 +286,5 @@ ls -la "$ASSETS_PACKS"/*
 echo "==> Running ufbt"
 cd "$REPO/flipper/hotspot-arcade"
 ufbt "$@"
-echo "==> Done: flipper/hotspot-arcade/dist/hotspot_arcade.fap"
+mv dist/hotspot_arcade.fap "dist/hotspot_arcade-$BOARD.fap"
+echo "==> Done: flipper/hotspot-arcade/dist/hotspot_arcade-$BOARD.fap"
