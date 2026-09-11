@@ -12,6 +12,19 @@ Verkada, Genetec, Avigilon), drones, and BLE trackers planted on you. The Flippe
 does the Wi-Fi sniffing its BLE-only radio can't. It's for security assessments,
 anti-surveillance awareness, and CTF/research.
 
+**It detects cameras that have stopped announcing themselves.** Modern ALPR
+hardware randomises its MAC address, which defeats the vendor-prefix matching
+every detector is built on — the camera is right there, transmitting, and a
+prefix list sees an empty street. FlipDeFlock identifies a probe request by its
+*shape*: the order and contents of its information elements, which describe the
+radio rather than the address and survive randomisation intact. That is how it
+finds a unit no OUI table can see.
+
+It also covers more of the field than a camera-only tool: ALPR, acoustic
+gunshot sensors, body-worn and in-car police cameras, five competitor camera
+vendors, drones by their federally-mandated Remote ID, and BLE trackers — each
+reported as what it actually is, never folded into one "surveillance" bucket.
+
 Drones are found by their **Remote ID** broadcast (ASTM F3411), which every
 unmanned aircraft in US airspace is required to transmit. That gives you the
 aircraft's serial, its type, its position, and the position of the person flying
@@ -282,8 +295,8 @@ firmware; in Marauder mode they explain what's missing.
   situation, switch it off. Turning it off deletes the file, and *Reports → Clear
   Saved Hits* erases it any time.
 - **Share to DeFlock** — renders a QR per marked, geotagged camera that opens
-  [DeFlock](https://deflock.org) at that location on your phone, so you submit
-  through the official app's review flow. The Flipper and ESP never touch a
+  the [DeFlock map](https://maps.deflock.org) zoomed to that location on your
+  phone, so you submit through the official app's review flow. The Flipper and ESP never touch a
   network. No Flipper GPS? DeFlock lets you place the pin by hand at
   [deflock.org/report](https://deflock.org/report).
 
@@ -383,6 +396,65 @@ indicators and verify by eye; if you rely on it for anything that matters, read
 the code and confirm the behavior yourself.
 
 ## What's new
+
+**v0.96** - **A camera on a randomised MAC can now be detected at all.** That gap
+was structural, not a matter of tuning: every rung of the companion's ladder
+needed an OUI match or a Flock SSID, so a randomised address scored zero and was
+thrown away *before* its fingerprint was even computed. A known probe signature
+now gets a frame past that on its own, and lands as `Class?` — capped there,
+because one contributor's drive is not proof. Verified on the bench against real
+randomised addresses with no OUI and no SSID behind them.
+
+The probe fingerprint also got a great deal sharper. The old one hashed each
+element's tag and length and threw the contents away, so the fields that describe
+a radio counted for nothing — across 120 devices in a field capture it produced
+49 distinct values with **74% of devices colliding**, one hash covering 24
+separate devices. `survey.csv` now carries a content-aware hash and a *readable*
+signature alongside it — an ordered IE tag list you can compare by eye against
+another capture, instead of eight opaque hex digits.
+
+**Two new candidate fingerprints, and one retracted.** From a field
+drive by @wiilover22, `ba9fafa0` ships as a candidate: four devices carry it, all
+on randomised addresses no OUI table can match, and they sit 1.1 km to 6.1 km
+apart — so they are four fixed installations, not one device rotating its MAC.
+That is the randomised-camera case this project has been chasing since issue #25.
+`d0bbec4c` joins it with a vendor anchor: three devices, all on OUIs already in
+the built-in Flock table.
+
+**`89c3debf` is retracted and denylisted, and it was our own advice.** We told him
+to add it to `signatures.json` as "the camera". His next drive found it on ten
+devices spread over 7.9 km, and ten of the nineteen rows in the hit table he sent
+back were phones. The denylist outranks your own file, so a card carrying it goes
+inert on update with nothing for you to edit.
+
+**Share to DeFlock sent you to the wrong page.** The QR pointed at
+`deflock.org`, which is the landing page: it has no map on it and silently drops
+the coordinates, so every QR this screen produced landed on "Welcome to DeFlock"
+with the location thrown away. It points at `maps.deflock.org` now and carries a
+zoom, without which the map opens at a whole-country view even on the right host.
+Thanks to @wiilover22 for the report.
+
+**The Locator never locked on, either.** The companion ends Locator mode on any
+command it gets, and the app polls its probe survey every ten seconds from a tick
+that runs in every screen -- so a hunt was cancelled seconds after it began, or
+instantly when opened from a detection on a link that was already up. A target
+30 cm away produced nothing across three attempts on the bench; it locks on in
+about a second now. The channel a detection is stored with was wrong twice over,
+which sent the Locator somewhere the camera never transmits: the companion
+stamped frames with wherever its sweep had reached rather than where the frame
+arrived, and the app then kept the last channel it heard rather than the
+strongest. Since 2.4 GHz channels overlap, a camera on channel 6 really is heard
+on 2 and 10 — just far weaker — so the last one heard was often a fringe. On the
+bench a target stored as channel 12 read -68 dBm; the same target, stored
+correctly as 6, reads -22.
+
+Also: Share to DeFlock no longer labels everything a Flock ALPR camera (a
+streetlight, an Axon pole or an unknown MAC was handed over as one, and a passing
+drone was offered as a fixed camera), its coordinates are no longer cut in half,
+the donation addresses are readable instead of overlapping into a smear, Help &
+Warnings is gone with About cut back to name/version/author/contributors, and the
+Locator no longer tells you to hold BOOT -- which drops the board into the flash
+loader and guarantees it never connects.
 
 **v0.95** - **Pin a whole address.** Randomised is not the same as rotating: the
 first camera anyone checked twice kept the identical invented address across

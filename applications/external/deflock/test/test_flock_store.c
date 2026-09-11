@@ -161,10 +161,12 @@ void suite_flock_store(void) {
         CHECK_INT_EQ((int)out.ie_fp, 0); // zeroed, so nothing claims "IE fp"
         CHECK_INT_EQ((int)out.conf, 3); // the recorded rung is left alone
 
-        // A legitimate fingerprint on the same row shape is untouched.
+        // A legitimate fingerprint on the same row shape is untouched. ba9fafa0
+        // is the real one from the same reporter's later drive -- four devices
+        // 1.1-6.1 km apart, which is why it survived where 89c3debf did not.
         CHECK(flock_store_parse_line(
-            "06:FC:CB:3A:F8:9E,,-26,6,F,3,89c3debf,,,,10,0,1788980501,0,0,", &out));
-        CHECK_INT_EQ((int)out.ie_fp, (int)0x89c3debfu);
+            "7A:B2:1B:2C:F2:AD,,-37,8,F,3,ba9fafa0,,,,10,0,1788980501,0,0,", &out));
+        CHECK_INT_EQ((int)out.ie_fp, (int)0xba9fafa0u);
     }
 
     // --- malformed input is rejected, and *out is left untouched -------------
@@ -204,6 +206,27 @@ void suite_flock_store(void) {
             "E0:0A:F6:12:34:AB,x,-67,11,Z,4,deadbeef,,,,42,1,1785000000", &guard));
 
         CHECK(memcmp(&guard, &before, sizeof(guard)) == 0); // never partially written
+    }
+
+    // EVERY ftype letter MUST SURVIVE A ROUND TRIP.
+    //
+    // 'S' did not. It was added to the parser and to flock_method_of() while the
+    // serializer's whitelist still read "PBROFL", so a community-signature
+    // detection was written out with an EMPTY frame type and came back from
+    // hits.csv having forgotten what it was -- its detail screen reverted to the
+    // generic "ESP probe rule". Nothing broke loudly; the row still loaded.
+    // Tested as a set rather than one letter, so the next letter cannot repeat it.
+    {
+        const char* letters = "PBROFLS";
+        for(const char* c = letters; *c; c++) {
+            FlockStoreRec r = sample();
+            r.ftype = *c;
+            char line[FLOCK_STORE_LINE_MAX];
+            CHECK(flock_store_fmt_line(line, sizeof(line), &r) > 0);
+            FlockStoreRec out;
+            CHECK(flock_store_parse_line(line, &out));
+            CHECK_INT_EQ(out.ftype, *c);
+        }
     }
 
     // A schema/comment line must not parse as a record.

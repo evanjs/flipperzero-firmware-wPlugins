@@ -104,6 +104,14 @@ typedef enum {
 // twice it and the most recent drives always survive. ~2800 rows, i.e. dozens of
 // drives; a session contributes at most RECON_SURVEY_MAX.
 #define RECON_SURVEY_LOG_MAX      131072u
+// Printable IE signature carried per survey row. A real camera's full tag list
+// runs to about 51 characters, so 72 holds it with room for a couple more
+// elements; longer ones truncate rather than drop, because even a cut signature
+// shows its leading tag order. Must be >= the companion's SURVEY_SIG_LEN or the
+// CSV loses the tail of what the board already measured. 48 rows x 72 B =
+// 3.4 KB, which is real money on this heap and is why it lives in the survey
+// table only and not in FlockEntry.
+#define RECON_SURVEY_SIG_LEN      72
 #define RECON_SURVEY_LOG_OLD_PATH RECON_APP_FOLDER "/survey_log.old.csv"
 
 /** ViewDispatcher view indexes. */
@@ -239,9 +247,29 @@ typedef enum {
 typedef struct {
     uint8_t mac[6];
     uint32_t fp;
+    /**
+     * IE-CONTENT hash -- the fix for why `fp` above could not identify anything.
+     * `fp` folds in each IE's tag and length and discards the bytes, so the
+     * capability elements that describe a radio count for nothing: across 120
+     * devices in a real capture it produced 49 distinct values with 74% of
+     * devices colliding, one hash covering 24 separate devices. 0 from firmware
+     * older than v0.96.
+     */
+    uint32_t fp2;
     int8_t rssi; /**< strongest seen -- closest approach */
     uint8_t channel;
     uint16_t count;
+    /**
+     * Printable IE signature: an ordered IE tag list with vendor elements
+     * expanded, readable rather than hashed.
+     *
+     * A HASH CANNOT BE READ. It cannot be eyeballed against someone else's
+     * capture, partially matched, or published in a form another project can
+     * use -- which is exactly what was needed and missing when a field report
+     * arrived carrying nothing but eight hex digits per row. This goes in
+     * survey.csv beside the hashes, not instead of them.
+     */
+    char sig[RECON_SURVEY_SIG_LEN];
 } SurveyEntry;
 #define RECON_SURVEY_MAX 48
 
@@ -288,12 +316,30 @@ typedef struct {
     char ssid[RECON_SSID_LEN];
     int8_t rssi;
     uint8_t channel;
-    char ftype; /**< P/B/R/O/F/L */
+    char ftype; /**< P/B/R/O/F/L/S */
     FlockConfidence confidence;
     uint8_t dev_class; /**< FlockDevClass: ALPR camera vs SoundThinking acoustic
                          *   sensor. What it is, as opposed to how sure we are. */
     bool hidden; /**< beacons but withholds its SSID. An OBSERVATION shown to the
                    *   operator, never a confidence input -- see esp_parser.c. */
+    uint8_t probe_rate; /**< wildcard probes this transmitter sent inside the
+                          *  companion's ~8 s window, at the strongest sighting.
+                          *
+                          *  THE ONE MEASUREMENT THAT SEPARATES A POLE FROM A
+                          *  HANDHELD. A mains-powered camera phones home every
+                          *  ~125 ms forever; a battery radio cannot, and when it
+                          *  does use WiFi it looks for a KNOWN network, which is
+                          *  a directed probe rather than a wildcard one. That
+                          *  matters most on a prefix covering both, which is
+                          *  exactly what Motorola Solutions is.
+                          *
+                          *  It rode the wire as `pr=` from v0.88 and was parsed
+                          *  into the message struct and then DROPPED -- never
+                          *  stored, never shown, never scored. Kept here so the
+                          *  detail screen can show it, and it is what the
+                          *  companion's own VENDOR_PROBE_SUSTAINED rung acts on.
+                          *  Max-held with the RSSI, same rule as `channel`: the
+                          *  closest sighting is the one worth keeping. */
     uint8_t ble_tell; /**< FlockBleTell: WHICH BLE signal classified this (mfg id
                         *   vs Raven GATT vs naming vs a shared OUI). Display only
                         *   -- never a confidence input. LIVE-SESSION ONLY: it is
@@ -301,6 +347,23 @@ typedef struct {
                         *   card reads back as FlockBleTellNone and the detail
                         *   screen falls back to the generic "BLE". */
     int8_t geotag_rssi; /**< rssi when the geotag was last set (hysteresis) */
+    int8_t chan_rssi; /**< rssi of the sighting that set `channel`.
+                        *
+                        *  THE CHANNEL HAS TO COME FROM THE CLOSEST APPROACH.
+                        *  2.4 GHz channels are 20 MHz wide on 5 MHz spacing, so
+                        *  a camera transmitting only on 6 is genuinely received
+                        *  on 2 and 10 as well -- measured at 30 cm on the bench,
+                        *  a beacon-only emitter pinned to 6 was heard on
+                        *  2/5/6/7/8/10/12, peaking at -20 on 6 and down at -57
+                        *  on 2 and 10. This field used to not exist and
+                        *  `channel` was last-write-wins, so whichever fringe
+                        *  capture arrived last became the stored channel.
+                        *
+                        *  That is not cosmetic: `locate` parks the companion's
+                        *  radio on this channel, so a fringe value sends the
+                        *  Locator somewhere the camera never transmits. Seen on
+                        *  the bench -- a target stored as channel 12 read -68
+                        *  dBm, the same target on 6 read -24. */
     bool marked; /**< user flagged this for the report */
     bool confirmed; /**< the operator SAW this device with their own eyes. Ground
                       *   truth, and the only thing in the table that is not an
@@ -437,7 +500,27 @@ typedef struct {
     SigDb* sig_db; /**< SD-loaded extra signatures (NULL = built-ins only) */
 
     FuriMutex* mutex; /**< protects flock[] and gps_* snapshot */
-    FlockEntry flock[RECON_FLOCK_MAX];
+    /* HEAP, NOT INLINE, so the ESP flasher can have the memory back.
+     *
+     * These four tables are the app's bulk. Inline in ReconApp they were locked
+     * up for the whole run, and with the app resident the largest contiguous
+     * block left was ~25 KB while the flasher plugin needs ~23 KB in one piece
+     * -- a firmware backup ran the device out of memory and crashed it. The
+     * ESP32 Firmware screen holds no scan, so it releases these first (see
+     * recon_tables_release/acquire) and the plugin gets a clean block.
+     *
+     * Indexing is unchanged: app->flock[i] reads identically for a pointer. */
+    /* ONE ALLOCATION, carved into the four pointers below.
+     *
+     * Freeing four separate blocks and re-allocating four left the heap more
+     * fragmented on every firmware-screen visit: measured on the bench, the
+     * largest contiguous block fell 32,448 -> 25,776 in a single cycle and did
+     * not recover, and a long session reached 13,816 -- below what the file
+     * browser needs, so "Flash a .bin" silently did nothing and the app looked
+     * wedged. One block frees one clean hole for the plugin and takes the same
+     * hole back afterwards. */
+    void* tables_block;
+    FlockEntry* flock;
     size_t flock_count;
     int selected; /**< selected flock index for the detail scene */
 
@@ -578,7 +661,7 @@ typedef struct {
     uint32_t diag_start_epoch; /**< wall clock at scan_session_start */
 
     /* ---- probe survey (see RECON_SURVEY_PATH) --------------------------- */
-    SurveyEntry survey[RECON_SURVEY_MAX];
+    SurveyEntry* survey;
     size_t survey_count;
     uint32_t survey_last_poll; /**< tick of the last `survey` request */
     /** Wall clock at scan start, the session column in survey_log.csv. Its own
@@ -592,13 +675,13 @@ typedef struct {
     /* The WiFi Audit SCREEN was removed, but this table stays: the Locator
      * builds its target list from it, so a marked camera can be hunted by
      * BSSID after a sweep. */
-    WifiAp wifi[RECON_WIFI_MAX]; /**< results of the last WiFi sweep */
+    WifiAp* wifi; /**< results of the last WiFi sweep */
     size_t wifi_count;
     bool wifi_scanning; /**< true between WBEGIN and WEND */
     bool wifi_done; /**< a scan has completed at least once */
     uint8_t saved_backend; /**< backend to restore after the WiFi-audit scene */
 
-    BleDevice ble[RECON_BLE_MAX]; /**< BLE devices / trackers */
+    BleDevice* ble; /**< BLE devices / trackers */
     size_t ble_count;
     bool ble_scanning;
     bool ble_done;
@@ -672,7 +755,8 @@ void recon_app_report_flock(
     FlockConfidence confidence,
     uint32_t ie_fp,
     FlockDevClass dev_class,
-    bool hidden);
+    bool hidden,
+    uint8_t probe_rate);
 
 /**
  * Record/merge an ASTM F3411 Remote ID broadcast from an unmanned aircraft.
@@ -746,7 +830,21 @@ void recon_app_survey_add(
     uint32_t fp,
     int8_t rssi,
     uint8_t channel,
-    uint16_t count);
+    uint16_t count,
+    uint32_t fp2,
+    const char* sig);
+
+/**
+ * Release the four bulk detection tables, returning ~10 KB of contiguous heap.
+ *
+ * ONLY safe with no scan running and no ESP/GPS worker alive -- every consumer
+ * walks these under app->mutex and a NULL table would fault. The firmware screen
+ * is the one place that qualifies. Persists hits first, and is idempotent.
+ */
+void recon_tables_release(ReconApp* app);
+
+/** Re-allocate the tables released above, zeroed. Idempotent. Restores hits. */
+void recon_tables_acquire(ReconApp* app);
 
 /** Write survey.csv. Counts and signatures only -- no SSID, no position. */
 void recon_survey_save(ReconApp* app);

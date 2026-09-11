@@ -122,10 +122,10 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [UHF Expansion v1.3 (By mtoolstec)](https://github.com/mtoolstec/fz-uhf-expansion)
 - Updated: [Vexed v1.1 (By dlvoy)](https://github.com/dlvoy/flipper-zero-vexed) (Version Only)
 - Updated: [Swimmy Fish v3.1 (By Invizabel)](https://github.com/Invizabel/fish)
-- Updated: [FlipDeFlock v0.95 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - Updated: [WiFi (Marauder) v0.7.11 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
 - Updated: [Hotspot Arcade v1.10.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
 - OFW: [Disable license expiration check in PVS options & update PR template- #4445 (By xMasterX)](https://github.com/flipperdevices/flipperzero-firmware/pull/4445)
+- Updated: [FlipDeFlock v0.96 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 
 <a name="release"></a>
 
@@ -572,7 +572,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - [FlipBoard Simon v1.10 (By jamisonderek)](https://github.com/jamisonderek/flipboard)
 - [FlipCrypt v0.6 (By TAxelAnderson)](https://github.com/TAxelAnderson/FlipCrypt)
 - [FlipDeck v3.0 (By ismail-oe)](https://github.com/ismail-oe/flipdeck)
-- [FlipDeFlock v0.95 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
+- [FlipDeFlock v0.96 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - [FlipDownloader v1.3.5 (By jblanked)](https://github.com/jblanked/FlipStore) `Req: ESP32` with [FliperHTTP Firmware](https://github.com/jblanked/FlipperHTTP)
 - [Flipfetch v0.1 (By alexroses47)](https://github.com/alexroses47/flipper-flipfetch)
 - [FlipFlash v1.0 (By Mushi0)](https://github.com/Mushi0/FlippFlash)

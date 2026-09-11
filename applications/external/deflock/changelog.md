@@ -1,5 +1,298 @@
 # Changelog
 
+## v0.96
+
+Everything below was driven on the hardware, not inferred.
+
+### Added
+
+- **A camera on a randomised MAC can now be detected at all.** This is the gap
+  issue #25 spent three weeks inside, and it was structural rather than a matter
+  of curation: every rung of the companion's ladder needed an OUI match or a
+  Flock SSID, so a randomised address scored zero and was dropped *before the
+  fingerprint was even computed*. No amount of signature work could reach past
+  that `return`.
+
+  A known probe signature now gets a frame past it on its own. Verified on the
+  bench against real randomised addresses with nothing else behind them:
+
+  ```
+  D,7ab77794524e,-28,6,P,0,,fp=173d7a70,sg=1
+  ```
+
+  `conf=0` means the ladder scored it at nothing. It reached the Flipper purely
+  on the shape of its probe request, and landed as `Class?` — capped there and
+  never able to auto-Confirm, because the signature is single-source.
+
+  The one signature shipped is community-contributed and single-source — it
+  matched 11 of 12 cameras with 2 false positives on the drive it came from,
+  which is good evidence and is not proof, hence the `Class?` ceiling.
+
+  It is matched as a SUBSTRING rather than as a whole tag list, because the
+  elements at the FRONT of a probe are the ones a capture path mangles first: a
+  driver that mis-starts its IE walk or trims a frame loses the leading tags and
+  keeps the tail. Anchoring on the vendor run that ends the probe survives that,
+  and costs nothing in precision because the discriminating content is all in
+  that run.
+
+- **The probe fingerprint now folds in IE CONTENT, not just tag and length.**
+  The old hash discarded every byte of every element, so supported rates and
+  HT/VHT/HE capabilities — the fields that actually describe a radio —
+  contributed nothing. Measured against the 120 devices in @wiilover22's capture:
+  49 distinct values, **74% of devices sharing a hash with something else**, one
+  hash covering 24 separate devices. A signature that coarse cannot identify
+  anything.
+
+  `ie_fp2` folds the capability contents in, while deliberately excluding DS
+  Parameter Set — that carries the channel, and including it would give a device
+  a different fingerprint on every channel it sweeps. Reported alongside the old
+  hash, never instead of it, so every `signatures.json` in the field keeps
+  working.
+
+- **`survey.csv` now carries a readable IE signature, not only hashes.** A hash
+  cannot be eyeballed, compared against another project's capture, partially
+  matched, or published for anyone else to use — which is exactly what was
+  needed and missing when a field report arrived as eight hex digits per row.
+  The format is deliberately plain — an ordered IE tag list with vendor elements
+  expanded — so a row can be read off the CSV, compared by eye against another
+  capture, and quoted straight into a report.
+
+- **`sigtest` on the companion**, kept permanently. The signature path cannot be
+  reached from the radio on a bench: the ESP-IDF will not inject a probe request
+  with a foreign source address, so no synthetic Flock probe can be put on the
+  air. `sigtest` runs a frame built to the known layout through the *same*
+  production functions the promiscuous callback uses, so the one detection path
+  that matters stays checkable on any bench, forever, without a camera.
+
+### Signatures
+
+From @wiilover22's 2026-09-11 drive (discussion #27): three CSVs covering six
+sessions, a road he reports as carrying 4-6 cameras, driven out and back.
+
+- **Two new candidate fingerprints.** Both lift a detection to `Class?` and
+  neither can ever auto-Confirm, because both come from one operator on one road.
+
+  `ba9fafa0` is the randomised-MAC signature this has been chasing since issue
+  #25. Four devices carry it, every one on a locally administered address that no
+  OUI table can touch — which is exactly why his cameras were invisible. What
+  makes it more than a guess is the geography: the four are **1.1 km to 6.1 km
+  apart**, so they are neither one device rotating its address nor anything
+  riding in his car. Each is close and busy (-21 to -43 dBm, 28-133 probes in a
+  session), it recurs across four of his six sessions, and it has never appeared
+  on this project's bench.
+
+  `d0bbec4c` is the first hash with a **vendor anchor**. Three devices, all three
+  on OUIs already in the built-in Flock table, spanning two different Flock
+  prefixes. No randomised and no other-vendor address carries it. Two of the
+  three sit 14 m apart — two poles at one intersection.
+
+- **`89c3debf` is retracted and denylisted, and it was our advice.** This project
+  told him to put it in `signatures.json` as "the device I think is the camera".
+  His drive found it on **ten devices spread over 7.9 km, -17 to -96 dBm, counts
+  1 to 149**. Ten of the nineteen rows in the hits file he sent back were phones
+  matched on it.
+
+  The denylist is consulted before every tier including the user's own file, so
+  his card goes inert on upgrade with no edit from him. Verified on hardware, not
+  argued: a `signatures.json` listing a denylisted hash alongside a legitimate
+  one, with devices carrying **both** confirmed on air during the scan — the
+  denylisted hash produced no hits, the legitimate one produced its detection at
+  `Class?`.
+
+- **`c59c341f` denylisted.** 24 distinct randomised MACs across two sessions, one
+  probe each, best signal -78 dBm. Twenty-four addresses seen once apiece is a
+  street randomising, not a device.
+
+- **A test fixture was asserting the retracted answer.** The survey ranker's
+  headline case was built from his first capture with `89c3debf` pinned as "the
+  camera", and asserted it ranked first. It now asserts the opposite: that row is
+  the closest and busiest in the file and must sink to zero because the skeleton
+  is denylisted. The test that hurts is the one worth having.
+
+### Fixed
+
+- **Share to DeFlock sent you to the wrong page.** The QR encoded a
+  `deflock.org` link, but that is the marketing landing page. It carries no map
+  at all and silently discards the `lat`/`lng` you scanned it for, so every QR
+  this screen ever produced dropped the scanner on "Welcome to DeFlock" with the
+  coordinates thrown away. Reported by @wiilover22 on issue #25.
+
+  The map lives on `maps.deflock.org`. It now points there, **and carries a
+  zoom**: without one the map opens at `zoom=4`, a whole-country view with the
+  camera an invisible speck, so the link would still have been useless on the
+  correct host. The URL buffer also grew, because the worst-case string -- a
+  southern-hemisphere camera at a 3-digit longitude -- is 64 characters plus the
+  NUL and would have been truncated into a QR that scans to a broken link.
+
+  The builder moved out of the scene into `helpers/deflock_url.c` so a host test
+  can assert all three of those things. That is why this survived four releases:
+  the only way to check it was to scan the QR off a Flipper screen with a phone,
+  and nobody did.
+
+- **The Locator never locked on.** The companion ends Locator mode on any
+  command it receives, which is correct for anything that re-tasks the radio --
+  but the app polls the companion's probe survey every ten seconds from a tick
+  that runs in *every* scene, the Locator included. So a hunt was cancelled
+  about ten seconds after it started, and immediately when the Locator was
+  opened on a link that was already up, which is what happens every time you go
+  Detection -> Lock. The board just stopped sending readings; the meter sat on
+  "acquiring signal..." and nothing on either side said why.
+
+  On the bench a Wi-Fi target 30 cm away produced zero readings across three
+  attempts of 50, 25 and 31 seconds. It now locks on in about a second and holds
+  at -24 dBm. Three changes, because one was not enough: the survey poll and the
+  relay-config resend are both held back while hunting, the companion no longer
+  treats the read-only `survey`/`ver` queries as radio re-tasking, and the
+  Locator re-sends its target every five seconds so the next stray command
+  cannot cost a release.
+
+- **Detections were stamped with the wrong channel.** The companion read the
+  channel from its own hopper variable -- where the sweep had got to by the time
+  the callback ran, not where the frame arrived. The promiscuous queue drains
+  behind the hop and every BLE scan window stalls it, so frames surfaced several
+  hops late: a bench emitter pinned to channel 6 was logged on 7, 10 and 12.
+
+  Not cosmetic. The Flipper stores that channel and the Locator parks the radio
+  on it, so a wrong stamp sends the hunt to a channel the camera never uses. It
+  now comes from `rx_ctrl.channel`, which is the channel the packet was actually
+  received on and cannot race.
+
+- **The stored channel was the last one heard, not the right one.** 2.4 GHz
+  channels are 20 MHz wide on 5 MHz spacing, so a camera transmitting only on
+  channel 6 is genuinely received on 2 and 10 as well. Measured at 30 cm with a
+  beacon-only emitter pinned to 6: heard on 2/5/6/7/8/10/12, peaking at -20 dBm
+  on 6 and down at -57 on 2 and 10. Every one of those overwrote the stored
+  channel, so whichever fringe capture happened to arrive last is where the
+  Locator went.
+
+  The channel now follows the STRONGEST sighting rather than the most recent, in
+  all three places it is kept: the detection table, the companion's survey rows,
+  and the app's survey merge. That last pair was incoherent in a way worth
+  naming -- the companion already kept the closest-approach RSSI but the
+  most-recent channel, so one row described two different moments.
+
+  End to end on the bench: all four beacon-only emitter identities now store
+  channel 6, where none of them did before. The target that read **-68 dBm, "out
+  of range"** with a stored channel of 12 reads **-22 dBm, steady** with 6.
+
+- **Share to DeFlock called everything a Flock ALPR camera.** The QR screen
+  emitted `surveillance:type=ALPR` and `manufacturer=Flock Safety` for whatever
+  was marked. The export path had the identical bug and was fixed in v0.79; this
+  screen kept it, so a Ubicquia streetlight, an Axon pole or a hit on a MAC in no
+  vendor table at all was handed to the operator as a Flock camera to type into a
+  public map. It now states the class actually determined and names a
+  manufacturer only when a vendor table matched.
+
+  **Drones are excluded from that screen entirely.** A Remote ID broadcast
+  carries a position, so an aircraft passed the geotag test and was offered like
+  any camera -- with a QR pointing DeFlock at a spot something flew over minutes
+  ago. The exporter already refused to tag one.
+
+- **Share to DeFlock cut the coordinates in half.** They were drawn in a 72 px
+  column, so `40.712799,-74.006004` rendered as `40.712799,-74.0` -- the
+  longitude lost, on the one screen whose job is to hand over a position. They
+  now use the full width.
+
+- **Every donation address was unreadable.** The three address lines were drawn
+  6 px apart with a font 8 px tall, so they overlapped into a smear and the last
+  chunk fell off the bottom of the screen. That strip exists precisely for when
+  the QR will not scan and the address has to be typed by hand. All four
+  addresses now read cleanly, the 54-character Bitcoin Cash one included.
+
+- **The Locator target list said "Flock" about everything.** The word was a
+  literal prefix on every row from the detection table, so a Remote ID broadcast
+  read `Flock BENCH-DRONE-01` and a camera already named Flock-A1B2C3 read
+  `Flock Flock-A1B2C3`. Rows now carry the class -- `ALPR`, `Drone`, `Gear`.
+
+- **The Locator told you to break the link it was waiting on.** When it had no
+  reading it printed "hold BOOT, tap RESET", which is the *flasher's*
+  instruction: BOOT held through a reset drops the ESP32 into the serial
+  download loader, where the companion firmware does not run at all. It also
+  called the state a connection failure, when in Locator mode the companion
+  sends nothing but readings -- so a healthy link and a dead board look
+  identical until the target next transmits. It reads "listening for target..."
+  now.
+
+- **"Flash Speed" advertised a baud the app never sends.** It offered
+  "Fast 921k" while the flasher passes 230400, and nine characters overran the
+  settings value column, so the "<" arrow was drawn on top of the F
+  (`<ast 921k`). It reads `115k` / `230k`.
+
+- **Two screens still pointed at the Help screen that was deleted.** The
+  in-scan fault card ended "OK dismiss - see Help" and the 5 V failure line read
+  "5V refused - see Help". Both now say what to do without the dead reference.
+
+- **Teaching the app a fingerprint looked like it did nothing.** Air Survey's
+  "I saw it" and "Pin addr" appended their result *after* the address, RSSI,
+  fingerprint and address kind -- six lines into a panel four lines tall. The
+  answer was two scroll presses below the fold, so the screen looked identical
+  after the press. The result is drawn first now.
+
+- **Text panels were clipped against the bezel.** About and the Air Survey
+  detail drew from 0,0, which puts the first baseline on row 0 and shaves the
+  top pixel row off every glyph in the title.
+
+- **A firmware backup could run the Flipper out of memory and crash it.** The
+  flasher is a ~23 KB plugin that has to map into ONE contiguous block, and with
+  the app's four detection tables resident the largest block left was ~25 KB.
+  Starting a backup took the device down hard enough to need a power cycle.
+
+  The tables now live on the heap and are released before the plugin loads, then
+  restored on the way out. Measured on the bench: largest contiguous block
+  25,744 -> 29,640 bytes, free heap 33,856 -> 41,008. The Help screen was also
+  removed and About cut back to a few lines, which returned 6,684 bytes of
+  `.rodata` -- on a FAP every byte of it is resident for the whole run.
+
+- **"Clear All Marks" did not stick.** It cleared the in-memory flags and said
+  "Marks Cleared", but never wrote `hits.csv`, so closing the app brought every
+  mark back. Verified by clearing, restarting, and watching three marks return.
+
+- **Four Settings values were cut off mid-word.** `Companion` showed as
+  `Compani`, `USART 13/14` as `USART 1`, `Probe req` as `Probe re`, and
+  `Beep+Vibe` as `Beep+Vi`. The value column is a fixed ~40 px regardless of
+  label length, confirmed by shortening the label and watching it clip
+  identically. They read `FDF FW`, `US13/14`, `Probe` and `Both` now.
+
+- **The Wi-Fi-only warning lost the word that carried it.** The header ran off
+  the screen as `FlipDeFlock v0.96 - WiFi`, and "WiFi" alone reads like a
+  feature rather than a limitation. It abbreviates to `FDF` when the warning is
+  showing, so the whole thing fits.
+
+- **The map scale label was unreadable at wide scales.** The range ring is
+  centred on the operator and grows with the fit, so its lower arc ran straight
+  through the label: `136863m` rendered as `1368` + arc + `3m`, which still
+  looks like a number. The label now draws on a cleared background.
+
+- **A backup left the board asleep without saying so.** Both flasher operations
+  park the ESP in the ROM download loader and nothing takes it back out, so the
+  app afterwards shows "no link" and zero frames. Only the flash path ever
+  mentioned it, and even there the line was invisible behind the progress
+  layout, which has room for one status line and a bar. The progress view now
+  hands back to the log when the transfer ends, and backup emits the same
+  "Tap RESET on ESP" hint flashing always did.
+
+- **A long SSID silently truncated when seeding a rename.** `rename_buf` is 25
+  bytes and an SSID is 33; correct behaviour, since that is the label's limit,
+  but implicit enough that the compiler flagged it once it could see through the
+  change above.
+
+### Changed
+
+- **Help & Warnings is gone** and **About is down to the essentials**: name,
+  version, author, contributors, licence. That documentation lives in
+  `README.md` and `docs/`, where it costs nothing at runtime.
+
+- The flasher screen **never scrolls**. Connecting, retrying and failure states
+  get the newest lines at fixed positions, so "hold BOOT, tap RESET" -- which is
+  only actionable while the attempt counter runs -- cannot be off-screen.
+
+- `ufbt lint` is clean across the tree, so it can be used as a gate.
+
+- `docs/signatures.md` now states plainly that **some real Flock hardware can
+  never be caught by a fingerprint**: a unit on `24:B2:B9`, in the built-in
+  table, was captured emitting `7c923b53`, the commodity skeleton that had
+  already smeared across unrelated vendors.
+
 ## v0.95
 
 Closing out everything the second field report exposed, rather than shipping a

@@ -4,7 +4,7 @@
 #include <string.h>
 
 /**
- * 31 OUI prefixes observed in fielded Flock Safety deployments.
+ * 32 OUI prefixes observed in fielded Flock Safety deployments.
  * Mostly @NitekryDPaul research; 82:6b:f2 from DeFlockJoplin field testing;
  * the last entry b4:1e:52 is Flock Safety's own IEEE-registered OUI (GainSec).
  * These are generic vendor prefixes (Liteon, Espressif, etc.), hence OUI-only
@@ -19,6 +19,16 @@
  *             FIELD-OBSERVED BLE NAME rather than by a list: "RWLS-38:5B:44:B3:
  *             0F:5A", a Flock unit that appends its own MAC to its GAP name. We
  *             already carry three SiLabs prefixes (58:8e:81, ec:1b:bd, 90:35:ea).
+ *
+ * ADDED 2026-09-10, during a sweep of community prefix lists:
+ *   14:b5:cd  LITEON TECHNOLOGY CORPORATION, resolved against the IEEE MA-L
+ *             registry before acceptance. Liteon is the vendor behind 21 of the
+ *             entries already here, so this is the same module line Flock buys,
+ *             not a new claim.
+ * Two other prefixes circulating in those lists were re-checked and stay
+ * REJECTED, for the reasons in the paragraph above: 48:27:ea is SAMSUNG and
+ * a4:cf:12 is ESPRESSIF. TOO_GENERIC in tools/check_oui_parity.py is what keeps
+ * a future sweep from quietly re-importing either one.
  *
  * REJECTED in the same sweep, and now ENFORCED by TOO_GENERIC in
  * tools/check_oui_parity.py so they cannot be quietly re-imported: 48:27:ea is
@@ -103,7 +113,7 @@ static const uint8_t flock_ouis[][3] = {
     {0xe8, 0xd0, 0xfc}, {0xe0, 0x4f, 0x43}, {0xb8, 0x1e, 0xa4}, {0x70, 0x08, 0x94},
     {0x58, 0x8e, 0x81}, {0xec, 0x1b, 0xbd}, {0x3c, 0x71, 0xbf}, {0x58, 0x00, 0xe3},
     {0x90, 0x35, 0xea}, {0x5c, 0x93, 0xa2}, {0x64, 0x6e, 0x69}, {0x82, 0x6b, 0xf2},
-    {0xb4, 0x1e, 0x52}, {0xe0, 0x0a, 0xf6}, {0x38, 0x5b, 0x44},
+    {0xb4, 0x1e, 0x52}, {0xe0, 0x0a, 0xf6}, {0x38, 0x5b, 0x44}, {0x14, 0xb5, 0xcd},
 };
 
 #define FLOCK_OUI_COUNT (sizeof(flock_ouis) / sizeof(flock_ouis[0]))
@@ -873,9 +883,56 @@ static const uint32_t flock_ie_fps[] = {
  * that camera's OUI ONLY and did not smear across unrelated vendors the way the
  * generic 0x7C923B53 skeleton did. Still one operator, one camera, one drive --
  * hence candidate, not verified. Needs a second independent sighting to promote.
+ *
+ * 0xBA9FAFA0 -- the randomised-MAC signature this whole investigation has been
+ * chasing since issue #25, from @wiilover22's 2026-09-11 drive.
+ *
+ * FOUR devices carry it, every one on a locally administered address, so no OUI
+ * table can ever touch them -- which is precisely the case that made his
+ * cameras invisible for three weeks. What promotes it above a guess is the
+ * GEOGRAPHY: the four are 1.1 km to 6.1 km apart, so they cannot be one device
+ * rotating its address, and they cannot be something riding in his car. Four
+ * separate fixed installations along a road he reports as having 4-6 cameras.
+ * Each is close and busy (-21 to -43 dBm, 28 to 133 probes in one session),
+ * which is what a pole-mounted unit looks like and is not what a passing phone
+ * looks like. It also recurs across FOUR of his six sessions and appeared in his
+ * earlier 2026-09-08 capture, and it has never once been seen on this project's
+ * bench.
+ *
+ * INDEPENDENTLY CORROBORATED, 2026-09-11, and this is the part that is not our
+ * own reasoning. Cross-referencing the reporter's own coordinates against the
+ * public OpenStreetMap surveillance layer (`man_made=surveillance`, the data
+ * the community maps are built from) puts a mapped Flock Safety ALPR 44 m from
+ * one of these devices, the one at -31 dBm with 62 probes. Of all EIGHTEEN
+ * geotagged detections in that capture, that is the ONLY one within 100 m of a
+ * mapped camera, and a second sits at 218 m. The nearest 0x89C3DEBF device is
+ * 239 m away and was heard at -96 dBm, i.e. nowhere near the pole.
+ *
+ * Held at CANDIDATE anyway, for two honest reasons. Two of the four devices are
+ * 1.7 km and 2.7 km from anything mapped -- explainable by patchy coverage, but
+ * unexplained is not corroborated. And a map record is not a second radio
+ * CAPTURE, which is what the promotion bar above actually asks for. Promotion
+ * would also buy almost nothing in practice: these addresses are randomised, so
+ * there is no OUI underneath for a built-in to auto-Confirm against.
+ *
+ * 0xD0BBEC4C -- the same drive, and the one hash here with a VENDOR ANCHOR.
+ * Three devices, all three on OUIs already in flock_ouis[] above, spanning TWO
+ * different Flock prefixes (24:B2:B9 and 70:08:94). Zero randomised addresses
+ * and zero other-vendor addresses carry it. Two of the three sit 14 m apart,
+ * which reads as two poles at one intersection. This is the shape the
+ * fingerprint table was designed around: the hash and the OUI agree without
+ * anyone having to judge which row was the camera.
+ *
+ * Both stay CANDIDATES despite the strength, because both come from one
+ * operator on one road. A candidate lifts a detection to Class? and can never
+ * auto-Confirm, which is the honest ceiling for that. Note 0xD0BBEC4C would
+ * Confirm on sight if promoted, since it rides on a Flock OUI -- which is the
+ * exact reason it must not be promoted on a single reporter.
  */
 static const uint32_t flock_ie_fps_candidate[] = {
     0x42D75CD1u,
+    0xBA9FAFA0u,
+    0xD0BBEC4Cu,
 };
 
 #define FLOCK_IE_FP_CANDIDATE_COUNT \
@@ -908,11 +965,32 @@ static const uint32_t flock_ie_fps_candidate[] = {
  *   there while 0x42D75CD1 from the same capture survived as a candidate. It was
  *   already named in the flock_ie_fps_candidate[] comment above as the
  *   counter-example; this makes that judgement enforceable instead of advisory.
+ *
+ * 0x89C3DEBF -- RETRACTED, and it was OURS. This is the hash this project told
+ *   @wiilover22 to put in his signatures.json on 2026-09-08 as "the device I
+ *   think is the camera ... matches nothing else". His 2026-09-11 drive settles
+ *   it: TEN devices carrying it, spread from 0 to 7.9 km apart, at signals from
+ *   -17 to -96 dBm and probe counts from 1 to 149. A fixed camera is not in ten
+ *   places at once across eight kilometres. It had also already appeared on
+ *   EIGHT randomised MACs on this project's own bench with no camera present
+ *   (CANDIDATES.md, 2026-09-09), which is what first put it in doubt.
+ *
+ *   Denylisting is the ONLY thing that undoes the advice, because
+ *   flock_ie_fp_match() consults this list before the user's own file: his card
+ *   goes inert on upgrade without him editing anything. Ten of the nineteen
+ *   rows in the hits.csv he sent were phones matched on this hash.
+ *
+ * 0xC59C341F -- 24 distinct locally administered MACs across two sessions, one
+ *   probe each, best signal -78 dBm (same capture). Twenty-four addresses seen
+ *   once apiece is a street full of phones randomising, not a device. Carried in
+ *   CANDIDATES.md as a watch item since 2026-09-09; the MAC count settles it.
  */
 static const uint32_t flock_ie_fps_generic[] = {
     0x96FCD1B2u,
     0x173D7A70u,
     0x7C923B53u,
+    0x89C3DEBFu,
+    0xC59C341Fu,
 };
 
 #define FLOCK_IE_FP_GENERIC_COUNT (sizeof(flock_ie_fps_generic) / sizeof(flock_ie_fps_generic[0]))
@@ -1041,6 +1119,16 @@ FlockMethod flock_method_of(const uint8_t* mac, const char* ssid, char ftype, ui
     // BLE is classified on the companion (mfg id 0x09C8 / Raven GATT) from advert
     // bytes that never reach this side, so name the source rather than guess.
     if(ftype == 'L') return FlockMethodBle;
+    // Community PROBE SIGNATURE, flagged by the companion as sg=1 and carried
+    // here as ftype 'S'. Last, because every test above re-derives something
+    // from fields we hold and this one cannot: the signature is the IE layout of
+    // a frame that never crosses the wire.
+    //
+    // It still has to be NAMED. This is the only indicator that fires on a
+    // randomised address, so it is the one an operator is most likely to be
+    // looking at and least able to explain -- on the bench it rendered as the
+    // generic "ESP probe rule", which says nothing about why the row exists.
+    if(ftype == 'S') return FlockMethodSig;
     return FlockMethodUnknown;
 }
 
@@ -1061,6 +1149,10 @@ const char* flock_method_str(FlockMethod method) {
         return "OUI";
     case FlockMethodBle:
         return "BLE mfg ID";
+    case FlockMethodSig:
+        // "probe sig", not "community signature": composed into
+        // "Method: <this> + <frame>" on a row with about 26 characters.
+        return "probe sig";
     case FlockMethodUnknown:
     default:
         // Not "none": the companion DID score it, on probe behaviour we cannot

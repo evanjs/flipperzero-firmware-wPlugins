@@ -36,7 +36,8 @@ void recon_app_report_flock(
     FlockConfidence confidence,
     uint32_t ie_fp,
     FlockDevClass dev_class,
-    bool hidden) {
+    bool hidden,
+    uint8_t probe_rate) {
     furi_mutex_acquire(app->mutex, FuriWaitForever);
     // Counted BEFORE the confidence gate, so the diagnostic can separate "the
     // companion reported nothing" from "it reported plenty and we binned it".
@@ -85,6 +86,11 @@ void recon_app_report_flock(
             memset(entry, 0, sizeof(FlockEntry));
             memcpy(entry->mac, mac, 6);
             entry->first_tick = now;
+            // Weaker than any real reading, so the first sighting always wins
+            // the channel. memset leaves this 0, and RSSI is negative dBm, so
+            // 0 would mean "nothing can ever beat it" and the channel would be
+            // frozen at whatever the first frame happened to carry.
+            entry->chan_rssi = INT8_MIN;
             entry->lat = NAN;
             entry->lon = NAN;
             entry->heading = NAN;
@@ -110,7 +116,19 @@ void recon_app_report_flock(
         entry->archived = false;
         entry->seen_epoch = furi_hal_rtc_get_timestamp();
         if(rssi != 0) entry->rssi = rssi;
-        if(channel != 0) entry->channel = channel;
+        // rssi tracks the LATEST sighting (it is a live proximity reading), but
+        // the channel must track the STRONGEST one -- see FlockEntry.chan_rssi
+        // for the measurement. Taking the latest let an off-channel fringe
+        // capture overwrite the real channel, and `locate` then parked the
+        // Locator's radio on it.
+        if(channel != 0 && (rssi == 0 || rssi >= entry->chan_rssi)) {
+            entry->channel = channel;
+            if(rssi != 0) entry->chan_rssi = rssi;
+            // Kept with the channel, from the SAME sighting, for the same
+            // reason: both describe the moment the device was closest, and a
+            // pair taken from two different moments describes neither.
+            entry->probe_rate = probe_rate;
+        }
         if(ftype) entry->ftype = ftype;
         if(confidence > entry->confidence) entry->confidence = confidence;
         // Keep the probe fingerprint so the detail screen can show it (for
@@ -569,7 +587,9 @@ void recon_app_survey_add(
     uint32_t fp,
     int8_t rssi,
     uint8_t channel,
-    uint16_t count) {
+    uint16_t count,
+    uint32_t fp2,
+    const char* sig) {
     furi_mutex_acquire(app->mutex, FuriWaitForever);
     SurveyEntry* e = NULL;
     for(size_t i = 0; i < app->survey_count; i++) {
@@ -603,8 +623,24 @@ void recon_app_survey_add(
         // the count by the number of dumps.
         e->count = count;
         e->fp = fp;
-        e->channel = channel;
-        if(rssi > e->rssi || e->rssi == 0) e->rssi = rssi;
+        // Channel moves WITH the RSSI, never on its own. The companion now pairs
+        // the two (see survey_note), and taking its channel while keeping a
+        // different sighting's RSSI would pull the pair apart again on this
+        // side. Air Survey feeds the Locator through Pin addr, so a fringe
+        // off-channel value here costs a hunt -- same failure as the detection
+        // table's chan_rssi.
+        if(rssi > e->rssi || e->rssi == 0) {
+            e->rssi = rssi;
+            e->channel = channel;
+        }
+        if(fp2) e->fp2 = fp2;
+        // First non-empty wins: the signature describes the DEVICE, not the
+        // sighting, so re-copying an identical 52-character string on every dump
+        // would be pure work. An empty one means firmware older than v0.96.
+        if(sig && sig[0] && !e->sig[0]) {
+            strncpy(e->sig, sig, RECON_SURVEY_SIG_LEN - 1);
+            e->sig[RECON_SURVEY_SIG_LEN - 1] = 0;
+        }
     }
     furi_mutex_release(app->mutex);
 
@@ -637,7 +673,7 @@ void recon_app_survey_add(
         // none, and no class beyond the ALPR default, because a fingerprint says
         // "this stack" and never "this kind of device".
         recon_app_report_flock(
-            app, mac, "", rssi, channel, 'F', fp_conf, fp, FlockClassAlpr, false);
+            app, mac, "", rssi, channel, 'F', fp_conf, fp, FlockClassAlpr, false, 0);
     }
 }
 
@@ -659,13 +695,16 @@ void recon_survey_save(ReconApp* app) {
             out,
             "# FlipDeFlock probe survey -- every wildcard-probe transmitter seen, matched or not\n"
             "# No SSID and no position. A high count next to a camera you can see is that camera.\n"
-            "mac,rssi,channel,ie_fp,count\n");
+            "# ie_fp2 folds in the capability IE CONTENTS, not just their tag+length like ie_fp.\n"
+            "# ie_sig is the same probe written out readably: an ordered IE tag list, with vendor\n"
+            "# elements expanded. It is LAST on the row because it contains commas.\n"
+            "mac,rssi,channel,ie_fp,count,ie_fp2,ie_sig\n");
         furi_mutex_acquire(app->mutex, FuriWaitForever);
         for(size_t i = 0; i < app->survey_count; i++) {
             SurveyEntry* e = &app->survey[i];
             furi_string_cat_printf(
                 out,
-                "%02X:%02X:%02X:%02X:%02X:%02X,%d,%u,%08lx,%u\n",
+                "%02X:%02X:%02X:%02X:%02X:%02X,%d,%u,%08lx,%u,%08lx,%s\n",
                 e->mac[0],
                 e->mac[1],
                 e->mac[2],
@@ -675,7 +714,9 @@ void recon_survey_save(ReconApp* app) {
                 e->rssi,
                 e->channel,
                 (unsigned long)e->fp,
-                (unsigned)e->count);
+                (unsigned)e->count,
+                (unsigned long)e->fp2,
+                e->sig);
         }
         furi_mutex_release(app->mutex);
         storage_file_write(file, furi_string_get_cstr(out), furi_string_size(out));
@@ -725,14 +766,16 @@ void recon_survey_log_append(ReconApp* app, void* storage_rec) {
                 "# session = scan start, as a unix time. Counts are PER SESSION, never\n"
                 "# since the board booted, so they stay comparable within one row group.\n"
                 "# No SSID and no position, same as survey.csv.\n"
-                "session,mac,rssi,channel,ie_fp,count\n");
+                "# ie_fp2 folds in the capability IE contents; ie_sig is the same probe written\n"
+                "# out readably. ie_sig is LAST on the row because it contains commas.\n"
+                "session,mac,rssi,channel,ie_fp,count,ie_fp2,ie_sig\n");
         }
         furi_mutex_acquire(app->mutex, FuriWaitForever);
         for(size_t i = 0; i < app->survey_count; i++) {
             SurveyEntry* e = &app->survey[i];
             furi_string_cat_printf(
                 out,
-                "%lu,%02X:%02X:%02X:%02X:%02X:%02X,%d,%u,%08lx,%u\n",
+                "%lu,%02X:%02X:%02X:%02X:%02X:%02X,%d,%u,%08lx,%u,%08lx,%s\n",
                 (unsigned long)session,
                 e->mac[0],
                 e->mac[1],
@@ -743,7 +786,9 @@ void recon_survey_log_append(ReconApp* app, void* storage_rec) {
                 e->rssi,
                 e->channel,
                 (unsigned long)e->fp,
-                (unsigned)e->count);
+                (unsigned)e->count,
+                (unsigned long)e->fp2,
+                e->sig);
         }
         furi_mutex_release(app->mutex);
         storage_file_write(file, furi_string_get_cstr(out), furi_string_size(out));
@@ -810,6 +855,23 @@ void recon_app_request_gps_cfg(ReconApp* app) {
 }
 
 void recon_app_gps_cfg_tick(ReconApp* app) {
+    // HOLD THE RESEND WHILE THE LOCATOR IS HUNTING.
+    //
+    // `band` and `gpscfg` genuinely re-task the radio, so the companion is right
+    // to cancel Locator mode when it sees them -- which means firing them mid-
+    // hunt silently ends the hunt. The board stops streaming LOC and the meter
+    // sits on "acquiring signal..." with nothing to explain it.
+    //
+    // It fires exactly when it does the most damage: the flag is raised by the
+    // companion's boot banner, and opening the Locator on a fresh link is
+    // precisely when the board is most likely to have just come up. The flag is
+    // LEFT RAISED rather than dropped, so the relay config still gets re-sent --
+    // one tick after the operator leaves this screen.
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    bool hunting = app->locate_kind != 0;
+    furi_mutex_release(app->mutex);
+    if(hunting) return;
+
     furi_mutex_acquire(app->mutex, FuriWaitForever);
     bool want = app->gps_cfg_resend;
     app->gps_cfg_resend = false;
@@ -971,7 +1033,8 @@ void recon_app_ble_add(
             flock_ble_confidence(company, name, raven_gatt),
             0,
             (cat == BleCatAxon) ? FlockClassBodycam : FlockClassAlpr,
-            false);
+            false,
+            0); // BLE advert, not a probe request -- no probe rate exists
         // Record WHAT matched, alongside how sure we are. Two Confirmed rows can
         // rest on very different evidence -- 0x09C8 is the battery VENDOR's id,
         // the Raven GATT is Flock's own -- and the operator should be able to see
@@ -1312,6 +1375,23 @@ void recon_hits_save(ReconApp* app) {
 
 void recon_survey_tick(ReconApp* app) {
     if(!app->esp) return; // no link, nothing to ask
+    // NOT WHILE THE LOCATOR OWNS THE RADIO.
+    //
+    // This tick runs for EVERY scene, and on the companion any command that is
+    // not `locate` cancels locate mode outright. So a poll fired ten seconds
+    // into a hunt silently ended it: the board stopped streaming LOC, the meter
+    // froze on "acquiring signal..." or decayed to "out of range", and nothing
+    // on either side said why. Re-entering the Locator from a detection detail
+    // kept the existing link, which left the poll clock already expired, so the
+    // kill landed on the FIRST tick -- the Locator simply never worked at all
+    // from that entry point.
+    //
+    // Measured on the bench: a WiFi target 30 cm away, beaconing on the locked
+    // channel, never produced one reading across three attempts. With this skip
+    // it locks on. The companion now also refuses to let `survey` cancel a hunt
+    // (see flock_companion.ino), so this is belt and braces -- but the app must
+    // not be asking for a table while it is asking the same radio to home.
+    if(app->locate_kind) return;
     uint32_t now = furi_get_tick();
     if(app->survey_last_poll != 0 && (now - app->survey_last_poll) < RECON_SURVEY_POLL_MS) {
         return;
@@ -1510,6 +1590,11 @@ static void recon_hits_add(ReconApp* app, const FlockStoreRec* r) {
     e->ssid[RECON_SSID_LEN - 1] = '\0';
     e->rssi = r->rssi;
     e->channel = r->channel;
+    // hits.csv carries no separate channel-RSSI column, so seed it from the
+    // stored reading: that row's channel and RSSI came from the same sighting.
+    // Seeding INT8_MIN instead would let the first fringe capture of the new
+    // session overwrite a channel earned at close range on the last drive.
+    e->chan_rssi = r->rssi;
     e->ftype = r->ftype;
     e->confidence = (FlockConfidence)r->conf;
     e->dev_class = r->dev_class;
@@ -1692,6 +1777,9 @@ static ReconApp* recon_app_alloc(void) {
     memset(app, 0, sizeof(ReconApp));
 
     app->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    // AFTER the mutex: recon_tables_acquire takes it, and furi_mutex_acquire on
+    // a NULL handle faults.
+    recon_tables_acquire(app);
     app->fw_log = furi_string_alloc();
     app->gps_lat = NAN;
     app->gps_lon = NAN;
@@ -1764,6 +1852,60 @@ static ReconApp* recon_app_alloc(void) {
     return app;
 }
 
+// Byte size of each table, rounded up so the next one starts 8-byte aligned.
+#define TBL_ALIGN(n)  (((n) + 7u) & ~7u)
+#define TBL_FLOCK_SZ  TBL_ALIGN(RECON_FLOCK_MAX * sizeof(FlockEntry))
+#define TBL_WIFI_SZ   TBL_ALIGN(RECON_WIFI_MAX * sizeof(WifiAp))
+#define TBL_BLE_SZ    TBL_ALIGN(RECON_BLE_MAX * sizeof(BleDevice))
+#define TBL_SURVEY_SZ TBL_ALIGN(RECON_SURVEY_MAX * sizeof(SurveyEntry))
+#define TBL_TOTAL_SZ  (TBL_FLOCK_SZ + TBL_WIFI_SZ + TBL_BLE_SZ + TBL_SURVEY_SZ)
+
+void recon_tables_release(ReconApp* app) {
+    // Persist before dropping, or a screen that merely wants memory becomes data
+    // loss. A no-op when Save Hits is off, same contract as everywhere else.
+    recon_hits_save(app);
+
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    free(app->tables_block);
+    app->tables_block = NULL;
+    app->flock = NULL;
+    app->wifi = NULL;
+    app->ble = NULL;
+    app->survey = NULL;
+    // Counts must go with the storage. A stale non-zero count over a NULL table
+    // is the shape of every use-after-free this could produce.
+    app->flock_count = 0;
+    app->wifi_count = 0;
+    app->ble_count = 0;
+    app->survey_count = 0;
+    furi_mutex_release(app->mutex);
+}
+
+void recon_tables_acquire(ReconApp* app) {
+    furi_mutex_acquire(app->mutex, FuriWaitForever);
+    if(!app->tables_block) {
+        // ONE BLOCK, carved. Four separate allocations left the heap a little
+        // worse after every release/acquire round trip, because the plugin that
+        // borrows the space in between is one big block and the four that come
+        // back afterwards do not refill the same hole. Measured: largest
+        // contiguous block 32,448 -> 25,776 in one firmware-screen visit,
+        // cumulative, until the file browser could no longer allocate at all.
+        uint8_t* p = calloc(1, TBL_TOTAL_SZ);
+        if(p) {
+            app->tables_block = p;
+            app->flock = (FlockEntry*)p;
+            app->wifi = (WifiAp*)(p + TBL_FLOCK_SZ);
+            app->ble = (BleDevice*)(p + TBL_FLOCK_SZ + TBL_WIFI_SZ);
+            app->survey = (SurveyEntry*)(p + TBL_FLOCK_SZ + TBL_WIFI_SZ + TBL_BLE_SZ);
+        }
+    }
+    app->flock_count = 0;
+    app->wifi_count = 0;
+    app->ble_count = 0;
+    app->survey_count = 0;
+    furi_mutex_release(app->mutex);
+}
+
 static void recon_app_free(ReconApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewSubmenu);
     view_dispatcher_remove_view(app->view_dispatcher, ReconViewVarItemList);
@@ -1796,6 +1938,10 @@ static void recon_app_free(ReconApp* app) {
 
     sig_db_free(app->sig_db); // clears the extra-signature registration first
     furi_string_free(app->fw_log);
+    // One block backing all four tables (see recon_tables_acquire). Freed before
+    // the mutex, since release takes it.
+    free(app->tables_block);
+
     furi_mutex_free(app->mutex);
     free(app);
 }
