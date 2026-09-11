@@ -23,6 +23,12 @@
 // draw distance. No format version bump is needed.
 #define FLIPCRAFT_HDR_FLAGS_OFFSET 36u
 
+// Terrain preset, byte 37 of the header (another reserved zero). Zero means
+// FlipcraftWorldNormal, so every world written before this field existed reads
+// back as the terrain it actually has. Generation-time only: the engine never
+// looks at it, the blocks are already on disk.
+#define FLIPCRAFT_HDR_TYPE_OFFSET 37u
+
 enum {
     FlipcraftFlagModeMask = 0x03u, // FlipcraftMode
     FlipcraftFlagMobsOff = 0x04u,  // creatures never spawn
@@ -30,6 +36,16 @@ enum {
     // 0x08 and 0x20 were the baked sun shadows and their "cheap" variant.
     // Both bits are ignored on read, so worlds created with them still open.
 };
+
+// Terrain presets the creation form offers. The order is part of the file
+// format -- never renumber, only append.
+typedef enum {
+    FlipcraftWorldNormal = 0,    // hills, biomes, ravines: the original generator
+    FlipcraftWorldFlat = 1,      // 5 flat courses, top at y=4, trees and a house
+    FlipcraftWorldSuperflat = 2, // the same ground, bare: no trees, no house
+    FlipcraftWorldWoods = 3,     // normal relief, forest everywhere, dense trees
+    FlipcraftWorldCount = 4,
+} FlipcraftWorldType;
 
 typedef enum {
     FlipcraftModeSurvival = 0,
@@ -42,10 +58,11 @@ typedef struct {
     uint32_t seed;
     uint8_t chunks; // world size, 16..128 chunks per side
     uint8_t flags;  // FlipcraftFlag* bitmask, written into the header
+    uint8_t type;   // FlipcraftWorldType, shapes the terrain and its features
 } FlipcraftWorldParams;
 
 #define FLIPCRAFT_MENU_APP_ID      "flipcraft_menu"
-#define FLIPCRAFT_MENU_API_VERSION 4u
+#define FLIPCRAFT_MENU_API_VERSION 5u
 
 typedef enum {
     FlipcraftMenuActionQuit = 0,     // leave the app
@@ -76,15 +93,15 @@ typedef struct {
 } FlipcraftGameApi;
 
 #define FLIPCRAFT_WORLDGEN_APP_ID      "flipcraft_worldgen"
-#define FLIPCRAFT_WORLDGEN_API_VERSION 2u
+#define FLIPCRAFT_WORLDGEN_API_VERSION 3u
 
 typedef void (*FlipcraftGenProgress)(void* ctx, uint8_t percent);
 
 typedef struct {
     // Writes a freshly generated params->chunks x params->chunks world
-    // (16..128 per side) to path using exactly params->seed, stamping
-    // params->flags into the header. Returns false and removes the file on
-    // failure.
+    // (16..128 per side) to path using exactly params->seed and the terrain
+    // preset params->type, stamping params->flags into the header. Returns
+    // false and removes the file on failure.
     bool (*generate)(
         const char* path,
         const FlipcraftWorldParams* params,

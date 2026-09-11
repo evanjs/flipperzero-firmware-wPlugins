@@ -11,6 +11,7 @@ Every world grows from a text seed in four sizes, from 128x128 up to 1024x1024 b
 Each world carries its own settings, chosen at creation and editable later:
 
 - **Gamemode** - Survival, Hardmode (death deletes the world) or Creative (infinite blocks from a picker, no damage, no drops).
+- **Terrain** - Normal (hills, forests, deserts, ravines), Flat (a level plain five courses deep, with trees and a house), Superflat (the same plain, completely bare) or Woods (normal relief, no deserts, twice the trees). Chosen at creation.
 - **Mobs** - on or off.
 - **Draw distance** - Far renders the whole chunk ring around you, Near renders only the chunk you stand in and is the lightest mode in both RAM and time.
 

@@ -26,6 +26,13 @@ constexpr int CHUNK_BYTES = CHUNK * HEIGHT * CHUNK;           // 1024
 constexpr int BLOCKSIZE = 16;
 constexpr uint32_t HEADER_SIZE = 64;
 
+// Terrain presets (plugin_api.h FlipcraftWorldType, kept in sync by hand so
+// this header still builds without the firmware contract). The flat presets
+// lay down a fixed 5-course ground: a bottom "bedrock" course of stone (the
+// engine draws its floor plane under y == 0), two more stone, dirt, grass.
+enum : uint8_t { TYPE_NORMAL = 0, TYPE_FLAT = 1, TYPE_SUPERFLAT = 2, TYPE_WOODS = 3 };
+constexpr int FLAT_TOP = 4;
+
 enum : uint8_t {
     AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, COBBLE = 4, LOG = 5, LEAVES = 6,
     PLANK = 7, COALORE = 8, IRONORE = 9, SAND = 10,
@@ -47,6 +54,7 @@ typedef void (*Progress)(void* ctx, uint8_t percent);
 // world-hash / noise: hashes match worldgen.py bit-for-bit.
 
 static uint32_t g_seed;
+static uint8_t g_type;       // TYPE_*, chosen on the creation screen
 static int g_worldW;         // world size in blocks
 static int g_tileX0, g_tileZ0, g_tileW; // current tile origin/size in blocks
 
@@ -133,7 +141,15 @@ static uint8_t colAt(int x, int z) { return g_col[(z - g_tileZ0) * g_tileW + (x 
 static int topAt(int x, int z) { return colAt(x, z) & COL_TOP; }
 static bool sandColumn(uint8_t c) { return (c & (COL_DESERT | COL_RAVINE)) || (c & COL_TOP) <= 2; }
 
+static bool flatWorld() { return g_type == TYPE_FLAT || g_type == TYPE_SUPERFLAT; }
+
 static uint8_t computeColumn(int x, int z) {
+    // Flat presets skip the noise entirely: one height, one biome. Superflat
+    // clears the forest flag too -- it is the only thing trees grow on -- and
+    // placeFeatures drops everything else it would have stamped.
+    if(flatWorld())
+        return (uint8_t)(FLAT_TOP | (g_type == TYPE_FLAT ? COL_FOREST : 0));
+
     constexpr float S = 1.0f / (float)TILE_W; // fixed landscape scale
     float u = x * S, v = z * S;
 
@@ -157,11 +173,14 @@ static uint8_t computeColumn(int x, int z) {
                         ((float)x / (float)g_worldW - 0.5f) * 0.35f;
     float desertScore =
         temperature * 0.68f - moisture * 0.72f + fbm(px * 5.0f, pz * 5.0f, 8, 3) * 0.24f;
-    bool desert = desertScore > 0.18f && ravineDepth < 3;
+    // The woods preset keeps the relief but drops the desert biome and marks
+    // every column outside a ravine as forest; placeFeatures plants it dense.
+    bool desert = g_type != TYPE_WOODS && desertScore > 0.18f && ravineDepth < 3;
 
     float forestScore = moisture * 0.78f - fabsf(temperature) * 0.22f +
                         fbm(px * 6.0f + 5.0f, pz * 6.0f, 9, 3) * 0.18f;
-    bool forest = forestScore > 0.02f && !desert && ravineDepth == 0;
+    bool forest = ravineDepth == 0 && !desert &&
+                  (g_type == TYPE_WOODS || forestScore > 0.02f);
 
     float topF = 4.4f + continent * 1.6f + detail + hill - (float)ravineDepth;
     int top = (int)(topF + 0.5f);
@@ -253,7 +272,7 @@ static int greedyPlace(
     return placed;
 }
 
-static Placed g_trees[96];
+static Placed g_trees[192]; // the woods preset fills the whole array
 static int g_treeCount;
 
 static bool treeEligible(int x, int z) {
@@ -335,15 +354,25 @@ static bool houseFits(int x, int z) {
 }
 
 static void placeFeatures(bool allowHouse) {
+    // Superflat is bare ground: no trees, no fallen trunks, no stone piles and
+    // no house anywhere in the world.
+    if(g_type == TYPE_SUPERFLAT) {
+        g_treeCount = g_fallenCount = g_pileCount = g_houseCount = 0;
+        return;
+    }
+
     int w = g_tileW;
     int n;
 
-    n = collectCellMaxima(4, 3, w - 4, 0.23f, treeEligible, treeScore);
-    int treeCap = w * w / 190;
+    // Woods: every column is eligible, so the score gate goes away and the
+    // spacing drops from 6 blocks to 4 -- as many trunks as g_trees holds.
+    const bool woods = g_type == TYPE_WOODS;
+    n = collectCellMaxima(4, 3, w - 4, woods ? -1e29f : 0.23f, treeEligible, treeScore);
+    int treeCap = woods ? w * w / 80 : w * w / 190;
     if(treeCap < 24) treeCap = 24;
     if(treeCap > (int)(sizeof(g_trees) / sizeof(g_trees[0])))
         treeCap = sizeof(g_trees) / sizeof(g_trees[0]);
-    g_treeCount = greedyPlace(n, treeCap, 36, treeFits, g_trees);
+    g_treeCount = greedyPlace(n, treeCap, woods ? 16 : 36, treeFits, g_trees);
 
     n = collectCellMaxima(8, 4, w - 5, -1e29f, clearGroundEligible, fallenScore);
     g_fallenCount = greedyPlace(n, 5, 225, fallenFits, g_fallen);
@@ -378,6 +407,7 @@ static void chSet(uint8_t* ch, int bx0, int bz0, int x, int y, int z, uint8_t id
 
 static void fillTerrain(uint8_t* ch, int bx0, int bz0) {
     memset(ch, AIR, CHUNK_BYTES);
+    const bool flat = flatWorld();
     for(int lz = 0; lz < CHUNK; lz++)
         for(int lx = 0; lx < CHUNK; lx++) {
             int x = bx0 + lx, z = bz0 + lz;
@@ -386,7 +416,9 @@ static void fillTerrain(uint8_t* ch, int bx0, int bz0) {
             bool sand = sandColumn(c);
             for(int y = 0; y <= top; y++) {
                 uint8_t id;
-                if(y == top)
+                if(flat) // grass, dirt, then stone all the way down: no ore
+                    id = (y == top) ? GRASS : (y == top - 1) ? DIRT : STONE;
+                else if(y == top)
                     id = sand ? SAND : GRASS;
                 else if(y >= top - 2)
                     id = sand ? SAND : DIRT;
@@ -521,11 +553,12 @@ static void putU32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
-static bool generate(int chunks, uint32_t seed, uint8_t flags, Writer out, Progress progress,
-                     void* pctx) {
+static bool generate(int chunks, uint32_t seed, uint8_t flags, uint8_t type, Writer out,
+                     Progress progress, void* pctx) {
     if(chunks < 1 || chunks > MAX_CHUNKS) return false;
     if(chunks > TILE_CHUNKS && chunks % TILE_CHUNKS != 0) return false;
     g_seed = seed;
+    g_type = type > TYPE_WOODS ? (uint8_t)TYPE_NORMAL : type;
     g_worldW = chunks * CHUNK;
     gradInit();
 
@@ -552,6 +585,7 @@ static bool generate(int chunks, uint32_t seed, uint8_t flags, Writer out, Progr
     // Per-world settings (plugin_api.h). Polarised so a zero byte -- every
     // world written before this field existed -- means the old behaviour.
     hdr[36] = flags;
+    hdr[37] = g_type; // terrain preset, generation-time only (plugin_api.h)
     if(!out.writeAt(out.ctx, 0, hdr, sizeof(hdr))) return false;
 
     // Zero the whole tile-entity region so unwritten slots read as free.

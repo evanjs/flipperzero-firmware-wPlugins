@@ -164,7 +164,7 @@ extern "C" int32_t flipcraft_app(void* p) {
             result = -1;
             break;
         }
-        FlipcraftWorldParams params = {0, 16, 0};
+        FlipcraftWorldParams params = {0, 16, 0, 0};
         FlipcraftMenuAction action = menu->run(world_path, sizeof(world_path), &params);
         splashSet(&splash, "Loading world...");
         flipper_application_free(plugin); // menu code leaves RAM here

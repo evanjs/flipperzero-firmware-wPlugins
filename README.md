@@ -51,6 +51,7 @@ Each world carries its own settings, chosen at creation and editable later:
 | Setting | Options |
 |---|---|
 | Gamemode | **Survival** - respawn on death. **Hardmode** - death deletes the world. **Creative** - infinite blocks from a picker, no damage, no drops. |
+| Terrain | **Normal** - hills, forests, deserts and ravines. **Flat** - a single level plain five courses deep (bedrock, two stone, dirt, grass) with trees, trunks and a house. **Superflat** - the same plain, completely bare: no trees, no trunks, no stone piles, no house. **Woods** - normal relief without deserts, planted twice as densely. Baked into the world at creation. |
 | Mobs | on / off |
 | Draw distance | **Far** renders the whole 3x3 chunk ring around you. **Near** renders only the chunk you stand in and is the lightest mode in RAM and time. |
 
