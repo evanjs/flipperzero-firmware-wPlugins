@@ -36,8 +36,10 @@ constexpr int FLAT_TOP = 4;
 enum : uint8_t {
     AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, COBBLE = 4, LOG = 5, LEAVES = 6,
     PLANK = 7, COALORE = 8, IRONORE = 9, SAND = 10,
-    TABLE = 13, FURNACE = 14, CHEST = 15, // engine Block ids (flipcraft.h)
+    TABLE = 13, FURNACE = 14, CHEST = 15, WATER = 20, // engine Block ids (flipcraft.h); water = source level
 };
+constexpr int SEA_LEVEL = 3; // water fills top+1..SEA_LEVEL, i.e. every sand-floored low column
+
 
 // v3 tile-entity region layout, must match world.cpp/game.cpp packStorage()
 constexpr uint32_t INV_REGION = 32, PAD_V2 = 4096;
@@ -301,7 +303,7 @@ static int g_fallenCount;
 
 static bool clearGroundEligible(int x, int z) {
     uint8_t c = colAt(x, z);
-    return !(c & (COL_DESERT | COL_RAVINE)) && localSlope(x, z) <= 1;
+    return !(c & (COL_DESERT | COL_RAVINE)) && (c & COL_TOP) >= SEA_LEVEL && localSlope(x, z) <= 1;
 }
 static float fallenScore(int x, int z) {
     return fbm(x * 0.11f, z * 0.11f, 70, 3) + (float)(whash(x, z, 71) & 255) / 700.0f;
@@ -332,7 +334,7 @@ static bool houseEligible(int x, int z) {
     for(int dz = 0; dz < 5; dz++)
         for(int dx = 0; dx < 5; dx++) {
             uint8_t c = colAt(x + dx, z + dz);
-            if(c & (COL_DESERT | COL_RAVINE)) return false;
+            if((c & (COL_DESERT | COL_RAVINE)) || (c & COL_TOP) < SEA_LEVEL) return false;
             int d = (c & COL_TOP) - base;
             if(d < -1 || d > 1) return false;
         }
@@ -428,6 +430,7 @@ static void fillTerrain(uint8_t* ch, int bx0, int bz0) {
                 }
                 ch[(y * CHUNK + lz) * CHUNK + lx] = id;
             }
+            for(int y = top + 1; y <= SEA_LEVEL; y++) ch[(y * CHUNK + lz) * CHUNK + lx] = WATER;
         }
 }
 

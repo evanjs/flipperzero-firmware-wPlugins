@@ -131,6 +131,7 @@ bool World::openWorld(const char* dataPath) {
             slotDirty[sx][sz] = false;
             slotGen[sx][sz] = 0;
             slotIdle[sx][sz] = 0;
+            slotWet[sx][sz] = 0;
         }
     centerCX = centerCZ = -2;
     loadPending = false;
@@ -288,6 +289,12 @@ void World::onSlotLoaded(int cx, int cz) {
     bumpRegion(cx + 1, cz);
     bumpRegion(cx, cz - 1);
     bumpRegion(cx, cz + 1);
+    // a front cut off at the old ring edge continues from either side
+    markWet(cx, cz);
+    markWet(cx - 1, cz);
+    markWet(cx + 1, cz);
+    markWet(cx, cz - 1);
+    markWet(cx, cz + 1);
 }
 
 bool World::loadChunkDirect(int cx, int cz) {

@@ -69,6 +69,7 @@ constexpr int MESH_IDS = 18;
 static_assert(BLOCK_DYNAMITE < MESH_IDS && ENTITY_GUNPOWDER < MESH_IDS, "mesh table too small");
 static MeshEntry g_blockMesh[MESH_IDS];
 static MeshEntry g_itemMesh[MESH_IDS];
+static MeshEntry g_waterMesh;   // one entry for all four water ids
 static const MeshEntry g_emptyMesh{};
 static bool g_meshReady = false;
 
@@ -148,6 +149,7 @@ static void initMesh() {
 
     g_blockMesh[BLOCK_DYNAMITE] = makeCube(TEX_DYNAMITETOP,0b1000,TEX_DYNAMITETOP,0b1000,TEX_DYNAMITE,0b1000,true,TEX_DYNAMITE,0b1000);
     g_itemMesh[ENTITY_DYNAMITE] = g_blockMesh[BLOCK_DYNAMITE];
+    g_waterMesh = makeCube(TEX_WATER,0b1000,TEX_WATER,0b1000,TEX_WATER,0b1000,false);
 
     { MeshEntry e; e.exists = true;
       setTextures(e, {{TEX_COALITEMLIGHT,0b1100},{TEX_COALITEMDARK,0b1110}});
@@ -156,7 +158,11 @@ static void initMesh() {
       g_itemMesh[ENTITY_GUNPOWDER] = e; }
 }
 
-const MeshEntry& meshBlock(uint8_t id) { initMesh(); return (id < MESH_IDS) ? g_blockMesh[id] : g_emptyMesh; }
+const MeshEntry& meshBlock(uint8_t id) {
+    initMesh();
+    if (blockIsWater(id)) return g_waterMesh;
+    return (id < MESH_IDS) ? g_blockMesh[id] : g_emptyMesh;
+}
 const MeshEntry& meshItem(uint8_t hi)  { initMesh(); return (hi < MESH_IDS) ? g_itemMesh[hi] : g_emptyMesh; }
 
 static constexpr MobSpec MOB_SPECS[MOB_SPECIES] = {

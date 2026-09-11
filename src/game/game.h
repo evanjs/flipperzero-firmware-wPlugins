@@ -132,6 +132,10 @@ private:
     void explodeMob(Mob& m);
     void explodeAt(int cx,int cy,int cz);
     void igniteDynamite(int bx,int by,int bz,int fuse);
+    bool swimming=false;
+    uint8_t waterTick=0;
+    bool inWaterAt(int x,int y,int z);   // player box at (x,y,z): feet+SWIM_DEPTH in water
+    void flowWater();   // scans World::slotWet chunks, spreads water one cell
     bool mobBlocksPlayer(int ox,int oz,int nx,int ny,int nz);
     void updateAllFurnaces();
     void simulateFurnaces();   // load/tick/flush furnaces inside the active window

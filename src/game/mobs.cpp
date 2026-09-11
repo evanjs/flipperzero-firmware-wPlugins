@@ -235,6 +235,8 @@ void Game::updateAllMobs(){
         // wander at half speed, chase/flee at full: v carries one extra
         // fractional bit, consumed by the walk accumulator below
         int v = m.mode ? (int)(s.geom&0x0F)<<(m.mode>>1) : 0;
+        const bool wet=!(s.info&8) && blockIsWater(world.getBlock((m.x+7)>>4,(m.y+SWIM_DEPTH)>>4,(m.z+7)>>4));
+        if(wet) v>>=1;
         bool walk = m.mode!=MOB_IDLE;
         if(m.mode>=MOB_CHASE){
             // lazy re-aim: the goal moves only when the target left the dead
@@ -289,11 +291,11 @@ void Game::updateAllMobs(){
         if(overPlayer(nx,m.y,m.z) && !wasP) nx=m.x;
         if(!boxCollides(nx,m.y,m.z,MOBWIDTH,hgt)) m.x=nx;
         else if(fly) bumped=true;
-        else if(grounded && m.vy==0 && !boxCollides(nx,stepY,m.z,MOBWIDTH,hgt)) m.vy=9;
+        else if(((grounded && m.vy==0) || (wet && m.vy<=MOB_SWIM_VY)) && !boxCollides(nx,stepY,m.z,MOBWIDTH,hgt)) m.vy=9;
         if(overPlayer(m.x,m.y,nz) && !wasP) nz=m.z;
         if(!boxCollides(m.x,m.y,nz,MOBWIDTH,hgt)) m.z=nz;
         else if(fly) bumped=true;
-        else if(grounded && m.vy==0 && !boxCollides(m.x,stepY,nz,MOBWIDTH,hgt)) m.vy=9;
+        else if(((grounded && m.vy==0) || (wet && m.vy<=MOB_SWIM_VY)) && !boxCollides(m.x,stepY,nz,MOBWIDTH,hgt)) m.vy=9;
 
         if(fly){
             int wantY;
@@ -304,6 +306,8 @@ void Game::updateAllMobs(){
                 wantY=(gby<<4)+m.alt;
             }
             m.vy=bumped?4:std::clamp(wantY-m.y,-4,4);
+        } else if(wet){   // buoyant, as if jump were held; a bank hop decays back to it
+            m.vy = m.vy>MOB_SWIM_VY ? m.vy-2 : std::min(m.vy+2,MOB_SWIM_VY);
         } else {
             m.vy-=2; if(m.vy<-8)m.vy=-8;
         }

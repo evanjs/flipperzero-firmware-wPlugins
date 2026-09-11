@@ -10,6 +10,11 @@ struct Vertex { float x=0, y=0, z=0, u=0, v=0; };
 // Visible faces of one resident chunk, packed one face per uint32_t:
 //   bits 0-2  local x        bits 3-5  local z      bits 6-9   y
 //   bits 10-14 quad id       bits 15-22 texture id  bits 23-26 settings
+//   bit 27 water: the next word holds the surface corner heights, one byte
+//   each in px 0..16, corner c = (x>>4) | (z>>4)<<1 of the quad template,
+//   bit 31 of it set; y==16 vertices are drawn at that height
+//   bit 31 submerged: a solid's face against water under more water; it is
+//   covered by the opaque surface, so it is drawn only with the eye in water
 // Rebuilt only when the chunk content changes (World::slotGen mismatch), so a
 // frame never scans voxels -- it just walks these lists.
 struct ChunkMesh {
@@ -67,7 +72,7 @@ private:
     Vertex camToScreen(const Vertex& v) const;
     __attribute__((noclone)) void drawQuadCam(Vertex q[4]);   // O3 cloned it per caller, +684 B
     void renderQuad(float x,float y,float z,int quadId,uint8_t texId,int texSettings);
-    void drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings);
+    void drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings,uint32_t corners);
     void buildChunkMesh(const World& w,int sx,int sz);
     void rasterTri(const Vertex& a,const Vertex& b,const Vertex& c);
     bool isBackfacing(const Vertex& a,const Vertex& b,const Vertex& c) const;

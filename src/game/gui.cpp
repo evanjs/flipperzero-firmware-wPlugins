@@ -94,6 +94,7 @@ const char* blockName(uint8_t blockId) {
         case BLOCK_FURNACE: return "Furnace";
         case BLOCK_CHEST:   return "Chest";
         case BLOCK_DYNAMITE:return "Dynamite";
+        case BLOCK_WATER:   return "Water";
         default: return nullptr;
     }
 }

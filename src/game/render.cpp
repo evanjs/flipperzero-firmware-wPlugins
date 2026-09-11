@@ -39,6 +39,61 @@ static const FaceCull kCull[QUAD_COUNT] = {
 };
 
 static bool gTablesReady = false;
+// side k of a block: -x, +x, -z, +z, in QUAD_FULL_NEGX.. order
+static constexpr int8_t kSideX[4] = {-1, 1, 0, 0}, kSideZ[4] = {0, 0, -1, 1};
+
+// The original's RenderBlocks.getFluidHeight: each surface corner is the
+// weighted mean of the four cells around it -- sources and falls weigh 11,
+// flowing water 1 with emptiness (level+1)/9, air 1 with emptiness 1, solids
+// nothing; water above any of them makes the corner full. Shared corners
+// join neighbouring cells into one continuous, sloping sheet. Packed one
+// byte per corner with bit 31 set (never zero). Rebuild time only.
+__attribute__((noinline)) static uint32_t waterCorners(const World& w, int x, int y, int z) {
+    uint8_t nb[2][3][3];
+    for (int i = 0; i < 18; i++)   // one loop, one getBlock: it inlines large
+        nb[i / 9][(i / 3) % 3][i % 3] = w.getBlock(x + i % 3 - 1, y + i / 9, z + (i / 3) % 3 - 1);
+    uint32_t packed = 1u << 31;
+    for (int c = 0; c < 4; c++) {
+        int sum = 0, total = 0, h = -1;
+        for (int k = 0; k < 4 && h < 0; k++) {
+            const int dx = (c & 1) + (k & 1), dz = (c >> 1) + (k >> 1);
+            if (blockIsWater(nb[1][dz][dx])) { h = 16; break; }
+            const uint8_t b = nb[0][dz][dx];
+            if (blockIsWater(b)) {
+                const int e = (b & 1) || b == BLOCK_WATER ? 1 : (b >> 5) + 1;   // ninths empty
+                const int wgt = e == 1 ? 11 : 1;
+                sum += e * wgt; total += 9 * wgt;
+            } else if (!blockIsSolid(b)) { sum += 9; total += 9; }
+        }
+        if (h < 0) h = total ? (16 * (total - sum) + total / 2) / total : 16;
+        packed |= (uint32_t)h << (8 * c);
+    }
+    return packed;
+}
+
+// Face list writer for buildChunkMesh: counts on the first pass (out null),
+// writes on the second. ext (water corners) and hid (bit 31) are per block.
+// Out of line: the scan lambda has seven call sites.
+struct FaceOut { uint32_t* out; int count; uint32_t ext, hid; };
+__attribute__((noinline)) static void emitFace(FaceOut& o, int lx, int y, int lz, int quad, uint8_t tex, uint8_t set) {
+    if (o.out) {
+        o.out[o.count] = (uint32_t)lx | ((uint32_t)lz << 3) | ((uint32_t)y << 6) |
+                         ((uint32_t)quad << 10) | ((uint32_t)tex << 15) |
+                         ((uint32_t)set << 23) | (o.ext ? 1u << 27 : 0u) | o.hid;
+        if (o.ext) o.out[o.count + 1] = o.ext;
+    }
+    o.count += o.ext ? 2 : 1;
+}
+
+// A face is visible when the neighbour is a different, see-through block;
+// water levels differ only in the high bits and never face each other.
+// 0 hidden, 1 visible, 2 visible against water. Out of line: the scan
+// lambda inlines its callers six times over.
+__attribute__((noinline)) static uint8_t faceShows(uint8_t id, uint8_t n) {
+    if (!((n ^ id) & 0x1F) || !blockIsTransparent(n)) return 0;
+    if (!blockIsWater(n)) return 1;
+    return blockIsWater(id) ? 0 : 2;
+}
 
 static void initTables() {
     if (gTablesReady) return;
@@ -295,8 +350,15 @@ void Renderer::renderQuad(float x,float y,float z,int quadId,uint8_t texId,int t
     drawQuadCam(cam);
 }
 
-void Renderer::drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings) {
+void Renderer::drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings,uint32_t corners) {
     const int (*tmpl)[3] = quadTemplate(quadId);
+    int wet[4][3];
+    if (corners) {   // water: the y==16 vertices take the surface corner heights
+        memcpy(wet, tmpl, sizeof wet);
+        for (int i=0;i<4;i++)
+            if (wet[i][1] == 16) wet[i][1] = (int)(corners >> (8 * ((wet[i][0] >> 4) | ((wet[i][2] >> 4) << 1)))) & 31;
+        tmpl = wet;
+    }
     const float bx = (float)(x << 4), by = (float)(y << 4), bz = (float)(z << 4);
     Vertex cam[4];
     for (int i=0;i<4;i++) {
@@ -462,17 +524,13 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
     // An all-air chunk still owns its bedrock floor, so scan at least y == 0.
     const int yTop = w.slotMaxY[sx][sz] < 0 ? 0 : w.slotMaxY[sx][sz];
 
-    uint32_t* out = nullptr;   // null on the counting pass
-    int count = 0;
+    FaceOut fo{nullptr, 0, 0, 0};   // out null on the counting pass
+    uint32_t& ext = fo.ext;         // water: corner-height word that follows the face
+    uint32_t& hid = fo.hid;         // 1<<31 on a submerged face, see render.h
     auto emit = [&](int lx, int y, int lz, int quad, uint8_t tex, uint8_t set) {
-        if (out)
-            out[count] = (uint32_t)lx | ((uint32_t)lz << 3) | ((uint32_t)y << 6) |
-                         ((uint32_t)quad << 10) | ((uint32_t)tex << 15) |
-                         ((uint32_t)set << 23);
-        count++;
+        emitFace(fo, lx, y, lz, quad, tex, set);
     };
-    // A face is visible when the neighbour is a different, see-through block.
-    auto shows = [](uint8_t id, uint8_t n) { return n != id && blockIsTransparent(n); };
+    auto shows = faceShows;
 
     auto scan = [&]() {
         for (int y = 0; y <= yTop; y++) {
@@ -483,6 +541,7 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
                     if (y == 0 && blockIsTransparent(id))
                         emit(lx, 0, lz, QUAD_BEDROCK, TEX_STONE, TS_CULLBACK|TS_INVERTED);
                     if (id == BLOCK_AIR) continue;
+                    ext = 0; hid = 0;
 
                     if (!blockIsFull(id)) {
                         const uint8_t ni = gNonFullIdx[id & 0x1F];
@@ -494,33 +553,37 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
                         continue;
                     }
 
-                    const FaceTex* ft = gFaceTex[id];
-                    uint8_t n;
-                    if (ft[2].valid) {  // side faces
-                        n = lx > 0 ? row[lx-1] : w.getBlock(bx0-1, y, bz0+lz);
-                        if (shows(id, n)) emit(lx, y, lz, QUAD_FULL_NEGX, ft[2].tex, ft[2].set);
-                        n = lx < CHUNK_MASK ? row[lx+1] : w.getBlock(bx0+CHUNK_SIZE, y, bz0+lz);
-                        if (shows(id, n)) emit(lx, y, lz, QUAD_FULL_POSX, ft[2].tex, ft[2].set);
-                        n = lz > 0 ? B[y][lz-1][lx] : w.getBlock(bx0+lx, y, bz0-1);
-                        if (shows(id, n)) emit(lx, y, lz, QUAD_FULL_NEGZ, ft[2].tex, ft[2].set);
-                        n = lz < CHUNK_MASK ? B[y][lz+1][lx] : w.getBlock(bx0+lx, y, bz0+CHUNK_SIZE);
-                        if (shows(id, n)) emit(lx, y, lz, QUAD_FULL_POSZ, ft[2].tex, ft[2].set);
-                    }
+                    const FaceTex* ft = gFaceTex[id & 0x1F];
+                    const uint8_t up = y < WORLD_SY - 1 ? B[y+1][lz][lx] : (uint8_t)BLOCK_AIR;
+                    // a face against water is submerged once water is above this block too
+                    const uint32_t hidW = blockIsWater(up) ? 1u << 31 : 0u;
+                    if (blockIsWater(id)) ext = waterCorners(w, bx0 + lx, y, bz0 + lz);
+                    uint8_t n, r;
+                    // one loop for the four sides: emit/shows inline once, not four times
+                    if (ft[2].valid)
+                        for (int k = 0; k < 4; k++) {
+                            const int nx = lx + kSideX[k], nz = lz + kSideZ[k];
+                            n = ((nx | nz) & ~CHUNK_MASK) ? w.getBlock(bx0 + nx, y, bz0 + nz) : B[y][nz][nx];
+                            if ((r = shows(id, n))) { hid = r & 2 ? hidW : 0u; emit(lx, y, lz, QUAD_FULL_NEGX + k, ft[2].tex, ft[2].set); }
+                        }
                     // Down face: y == 0 can never be seen from below, skip it.
-                    if (y > 0 && ft[1].valid && shows(id, B[y-1][lz][lx]))
+                    if (y > 0 && ft[1].valid && (r = shows(id, B[y-1][lz][lx]))) {
+                        hid = r & 2 ? hidW : 0u;
                         emit(lx, y, lz, QUAD_FULL_NEGY, ft[1].tex, ft[1].set);
-                    n = y < WORLD_SY - 1 ? B[y+1][lz][lx] : (uint8_t)BLOCK_AIR;
-                    if (ft[0].valid && shows(id, n))
+                    }
+                    if (ft[0].valid && (r = shows(id, up))) {
+                        hid = r & 2 ? hidW : 0u;
                         emit(lx, y, lz, QUAD_FULL_POSY, ft[0].tex, ft[0].set);
+                    }
                 }
             }
         }
     };
 
     scan();                     // pass 1: count faces
-    std::vector<uint32_t> fresh(count);   // exactly count, no doubling
-    out = fresh.data();
-    count = 0;
+    std::vector<uint32_t> fresh(fo.count);   // exactly count, no doubling
+    fo.out = fresh.data();
+    fo.count = 0;
     scan();                     // pass 2: fill; same input, same counts
     cm.faces.swap(fresh);
 }
@@ -548,6 +611,7 @@ void Renderer::renderScene(const World& w) {
     }
 
     const float cpx = camPos[0], cpy = camPos[1], cpz = camPos[2];
+    const bool eyeWet = blockIsWater(w.getBlock(camBX, ifloor(cpy * (1.0f / (float)BLOCKSIZE)), camBZ));
     int budget = WINDOW_CHUNKS * WINDOW_CHUNKS;
     meshPending = false;
 
@@ -586,20 +650,30 @@ void Renderer::renderScene(const World& w) {
             const bool clip = bx0 < winX0 || bx0 + CHUNK_MASK > winX1 ||
                               bz0 < winZ0 || bz0 + CHUNK_MASK > winZ1;
 
-            for (uint32_t f : cm.faces) {
+            const std::vector<uint32_t>& fl = cm.faces;
+            for (size_t i = 0; i < fl.size(); i++) {
+                const uint32_t f = fl[i];
+                const uint32_t corners = (f & (1u << 27)) ? fl[++i] : 0u;
                 if ((int)((f >> 23) & TS_OVERLAY) != pass) continue;
+                if ((f >> 31) && !eyeWet) continue;   // under an opaque surface
                 const int gx = bx0 + (f & 7), gz = bz0 + ((f >> 3) & 7);
                 if (clip && (gx < winX0 || gx > winX1 || gz < winZ0 || gz > winZ1))
                     continue;
                 const int y = (f >> 6) & 15, quad = (f >> 10) & 31;
+                const uint8_t tex = (uint8_t)((f >> 15) & 0xFF);
+                uint8_t set = (f >> 23) & 0xF;
                 const FaceCull& fc = kCull[quad];
                 if (fc.axis >= 0) {
                     const float cam = fc.axis == 0 ? cpx : (fc.axis == 1 ? cpy : cpz);
                     const float plane =
                         (float)(((fc.axis == 0 ? gx : (fc.axis == 1 ? y : gz)) << 4) + fc.off);
-                    if (fc.neg ? cam >= plane : cam <= plane) continue;
+                    if (fc.neg ? cam >= plane : cam <= plane) {
+                        // the water surface is the one face seen from underneath too
+                        if (quad != QUAD_FULL_POSY || tex != TEX_WATER) continue;
+                        set &= (uint8_t)~TS_CULLBACK;
+                    }
                 }
-                drawBlockQuad(gx, y, gz, quad, (uint8_t)((f >> 15) & 0xFF), (f >> 23) & 0xF);
+                drawBlockQuad(gx, y, gz, quad, tex, set, corners);
             }
         }
 }
