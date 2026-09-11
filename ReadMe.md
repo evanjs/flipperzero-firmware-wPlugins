@@ -29,7 +29,7 @@ This software is for experimental purposes only and is not meant for any illegal
 
 ## Latest Updates - [PATREON: Latest Release RM0901-1829-525829d2-Patreon](https://www.patreon.com/RogueMaster?filters[tag]=Latest%20Release)
 
-- Last Synced/Checked OFW, changes in [commits](https://github.com/flipperdevices/flipperzero-firmware/commits/dev): `2026-09-01 18:29 EST`
+- Last Synced/Checked OFW, changes in [commits](https://github.com/flipperdevices/flipperzero-firmware/commits/dev): `2026-09-10 22:55 EST`
 - Last Synced/Checked CFW, changes in [changelog](https://github.com/RogueMaster/flipperzero-firmware-wPlugins/blob/420/CHANGELOG.md): `2026-08-26 14:01 EST`
 - Updated: [HTW AC Remote v1.2 (By sokogen)](https://github.com/sokogen/flipperzero-htw-ac-remote)
 - NFC: [Protocol scenes moved into their own plugins, roughly halving the app's resident RAM (By mishamyte)](https://github.com/DarkFlippers/unleashed-firmware/pull/1073)
@@ -125,6 +125,7 @@ This software is for experimental purposes only and is not meant for any illegal
 - Updated: [FlipDeFlock v0.95 (By ReconGrunt)](https://github.com/ReconGrunt/FlipDeFlock) `Req: ESP32`
 - Updated: [WiFi (Marauder) v0.7.11 (By 0xchocolate & tcpassos)](https://github.com/0xchocolate/flipperzero-firmware-with-wifi-marauder-companion)
 - Updated: [Hotspot Arcade v1.10.0 (By tarikbc)](https://github.com/tarikbc/hotspot-arcade) `Req: ESP32`
+- OFW: [Disable license expiration check in PVS options & update PR template- #4445 (By xMasterX)](https://github.com/flipperdevices/flipperzero-firmware/pull/4445)
 
 <a name="release"></a>
 
