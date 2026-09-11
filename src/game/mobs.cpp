@@ -114,10 +114,12 @@ void Game::explodeAt(int cx,int cy,int cz){
     for(int by=cy-1;by<=cy+1;by++)
     for(int bz=cz-1;bz<=cz+1;bz++)
     for(int bx=cx-1;bx<=cx+1;bx++){
-        if(world.getBlock(bx,by,bz)==BLOCK_DYNAMITE){
+        const uint8_t hit=world.getBlock(bx,by,bz);
+        if(hit==BLOCK_DYNAMITE){
             igniteDynamite(bx,by,bz,DYNAMITE_CHAIN_FUSE+((rng()*DYNAMITE_CHAIN_RND)>>8));
             continue;
         }
+        if(blockIsWater(hit)) continue;   // a blast never takes water out, as in Minecraft
         int be=findBlockEntity(bx,by,bz);
         if(be>=0){
             if(tiles[be].storage>=0) freeStorageSlot(tiles[be].storage);
