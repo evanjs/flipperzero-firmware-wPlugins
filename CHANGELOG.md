@@ -6,6 +6,33 @@ All notable changes to Hotspot Arcade are documented here. The format is based o
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-10
+
+### Added
+
+- **Downloads for a single board.** A release now carries four `.fap` files instead of
+  one. `hotspot_arcade-all.fap` behaves as before, with firmware for all three boards
+  inside it. `-s2`, `-wroom` and `-c5` carry only the board they name, so the download is
+  about a third of the size and the first launch unpacks in a fraction of the time.
+  Thanks to Tyl3rA.
+- `BOARD=s2|wroom|c5 tools/build-fap.sh` builds one of those variants locally, and
+  `tools/deploy-to-flipper.py --fap <path>` pushes it to the matching folder on the SD
+  card. Thanks to Tyl3rA.
+
+### Changed
+
+- **Install Firmware lists only the boards the download actually carries.** A
+  single-board `.fap` used to offer all three rows and fail at flash time on the two that
+  were not there. The picker now reads what is bundled, and skips the menu altogether
+  when there is only one board to choose.
+- The app's folders on the SD card follow the `.fap` filename, so
+  `hotspot_arcade-all.fap` reads `/ext/apps_data/hotspot_arcade-all/` rather than
+  `/ext/apps_data/hotspot_arcade/`. If you keep your own content packs or web bundle
+  there and you move to one of the new downloads, move that folder across as well. The
+  README claimed the variants shared one folder; it is corrected.
+
+Firmware is unchanged at v22, so a board already flashed for 1.9.0 needs no reflash.
+
 ## [1.9.0] - 2026-08-27
 
 ### Added
@@ -699,7 +726,8 @@ an official ESP32-S2 WiFi dev board. No internet and no app install required.
   for previewing the web client through lobby, trivia, and Connect Four in a desktop browser.
 - **CI**: a build workflow that compiles all three parts on every push and pull request.
 
-[Unreleased]: https://github.com/tarikbc/hotspot-arcade/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/tarikbc/hotspot-arcade/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/tarikbc/hotspot-arcade/compare/v1.9.0...v1.10.0
 [1.1.2]: https://github.com/tarikbc/hotspot-arcade/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/tarikbc/hotspot-arcade/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/tarikbc/hotspot-arcade/compare/v1.0.1...v1.1.0
