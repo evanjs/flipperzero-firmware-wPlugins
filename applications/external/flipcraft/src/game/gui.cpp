@@ -150,6 +150,8 @@ const char* blockName(uint8_t blockId) {
         return "Chest";
     case BLOCK_DYNAMITE:
         return "Dynamite";
+    case BLOCK_WATER:
+        return "Water";
     default:
         return nullptr;
     }

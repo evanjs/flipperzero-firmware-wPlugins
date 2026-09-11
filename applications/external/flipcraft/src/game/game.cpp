@@ -95,6 +95,8 @@ bool Game::setup(const GameConfig& config) {
     pl.onGround = true;
     velYsub = 0;
     posYsub = 0;
+    swimming = false;
+    waterTick = 0;
     forceRedraw = true;
     lastSig = 0;
 
@@ -103,9 +105,8 @@ bool Game::setup(const GameConfig& config) {
         m = Mob{};
     loadStorageDirectory();
     loadInventory();
-    // Per-world render settings from the header. Both are read once: the sun
-    // never moves and the draw distance never changes inside a session.
-    renderer.setShaders(world.shadersOn());
+    // Per-world render setting from the header: the draw distance never
+    // changes inside a session.
     renderer.setNearOnly(!world.farDraw());
     screenId = SCR_PLAY;
     selSlot = -1;
@@ -186,6 +187,92 @@ void Game::igniteDynamite(int bx, int by, int bz, int fuse) {
     world.setBlock(bx, by, bz, BLOCK_AIR);
     createEntity(bx, by, bz, ENTITY_LITDYNAMITE);
     items.back().fuse = fuse;
+}
+// The original's BlockFlowing rule, run as a scan over the chunks flagged by
+// World::setBlock/onSlotLoaded (state, not a queue: nothing is ever lost).
+// A non-source cell is recomputed every flow tick: water above -> falling,
+// else min(side levels)+1, drained when nothing feeds it or that exceeds
+// WATER_RANGE; two source neighbours (4-connected) over ground or a source
+// turn it into a source. Then it flows down if it can, else -- sources always,
+// flowing water only over ground -- sideways with level+1 (a landed fall
+// starts at 1). Targets are applied after every chunk was scanned, so a front
+// moves one cell per flow tick; overflow keeps the chunk flagged for the next.
+void Game::flowWater() {
+    if(++waterTick < WATER_TICK_DIV) return;
+    waterTick = 0;
+    uint32_t todo[WATER_BATCH];
+    int n = 0; // x | z<<10 | y<<20 | block byte<<24
+    for(int sx = 0; sx < WINDOW_CHUNKS; sx++)
+        for(int sz = 0; sz < WINDOW_CHUNKS; sz++) {
+            if(!world.slotWet[sx][sz]) continue;
+            world.slotWet[sx][sz] = 0;
+            const int cx = world.slotCX[sx][sz], cz = world.slotCZ[sx][sz];
+            if(cx < 0) continue;
+            const uint8_t(*B)[CHUNK_SIZE][CHUNK_SIZE] = world.slot[sx][sz];
+            const int bx0 = cx << CHUNK_SHIFT, bz0 = cz << CHUNK_SHIFT,
+                      yTop = world.slotMaxY[sx][sz];
+            auto push = [&](int x, int y, int z, uint8_t v) {
+                if(n < WATER_BATCH)
+                    todo[n++] = (uint32_t)x | ((uint32_t)z << 10) | ((uint32_t)y << 20) |
+                                ((uint32_t)v << 24);
+                else
+                    world.slotWet[sx][sz] = 1;
+            };
+            static constexpr int8_t kSideX[4] = {-1, 1, 0, 0}, kSideZ[4] = {0, 0, -1, 1};
+            for(int y = 0; y <= yTop; y++)
+                for(int lz = 0; lz < CHUNK_SIZE; lz++)
+                    for(int lx = 0; lx < CHUNK_SIZE; lx++) {
+                        const uint8_t b = B[y][lz][lx];
+                        if(!blockIsWater(b)) continue;
+                        const int gx = bx0 + lx, gz = bz0 + lz;
+                        const uint8_t below = y > 0 ? B[y - 1][lz][lx] : (uint8_t)BLOCK_STONE;
+                        // the four side cells, read once: in-chunk directly, across a border via getBlock
+                        const uint8_t s[4] = {
+                            lx > 0 ? B[y][lz][lx - 1] : world.getBlock(gx - 1, y, gz),
+                            lx < CHUNK_MASK ? B[y][lz][lx + 1] : world.getBlock(gx + 1, y, gz),
+                            lz > 0 ? B[y][lz - 1][lx] : world.getBlock(gx, y, gz - 1),
+                            lz < CHUNK_MASK ? B[y][lz + 1][lx] : world.getBlock(gx, y, gz + 1)};
+                        uint8_t nb = b;
+                        if(b != BLOCK_WATER) {
+                            int feed = WATER_RANGE, srcs = 0;
+                            for(int k = 0; k < 4; k++) {
+                                if(!blockIsWater(s[k])) continue;
+                                srcs += s[k] == BLOCK_WATER;
+                                const int l = waterLevel(s[k]);
+                                if(l < feed) feed = l;
+                            }
+                            const uint8_t above = y < WORLD_SY - 1 ? B[y + 1][lz][lx] :
+                                                                     (uint8_t)BLOCK_AIR;
+                            if(blockIsWater(above))
+                                nb = BLOCK_WATER_FALL;
+                            else
+                                nb = feed >= WATER_RANGE ? (uint8_t)BLOCK_AIR :
+                                                           waterBlock(feed + 1);
+                            if(srcs >= 2 && (blockIsSolid(below) || below == BLOCK_WATER))
+                                nb = BLOCK_WATER;
+                            if(nb != b) push(gx, y, gz, nb);
+                            if(nb == BLOCK_AIR) continue;
+                        }
+                        if(below == BLOCK_AIR) {
+                            push(gx, y - 1, gz, BLOCK_WATER_FALL);
+                            continue;
+                        }
+                        if(nb != BLOCK_WATER && !blockIsSolid(below)) continue;
+                        const int lvl = waterLevel(nb) + 1;
+                        if(lvl > WATER_RANGE) continue;
+                        for(int k = 0; k < 4; k++)
+                            if(s[k] == BLOCK_AIR)
+                                push(gx + kSideX[k], y, gz + kSideZ[k], waterBlock(lvl));
+                    }
+        }
+    for(int i = 0; i < n; i++) {
+        const uint32_t v = todo[i];
+        const int x = v & 1023, z = (v >> 10) & 1023, y = (v >> 20) & 15;
+        const uint8_t cur = world.getBlock(x, y, z), nv = (uint8_t)(v >> 24);
+        // only air fills and only water updates: a block placed meanwhile stays
+        if(cur == BLOCK_AIR ? nv != BLOCK_AIR : (blockIsWater(cur) && nv != cur))
+            world.setBlock(x, y, z, nv);
+    }
 }
 int Game::findBlockEntity(int x, int y, int z) {
     for(size_t i = 0; i < tiles.size(); i++)
@@ -357,7 +444,7 @@ Game::RayHit Game::rayCast() {
     float t = 0, tBlock = (float)RAYCASTMAXLENGTH;
     while(t <= (float)RAYCASTMAXLENGTH) {
         int id = by < 0 ? -1 : world.getBlock(bx, by, bz);
-        if(id != BLOCK_AIR) {
+        if(id != BLOCK_AIR && !blockIsWater((uint8_t)id)) {
             h.id = id;
             h.length = (int)t;
             h.bx = bx;
@@ -633,6 +720,10 @@ void Game::handleBreakAndPlace(const Input& in) {
     }
 }
 
+bool Game::inWaterAt(int x, int y, int z) {
+    return blockIsWater(world.getBlock(
+        (x + PLAYERHALFWIDTH) >> 4, (y + SWIM_DEPTH) >> 4, (z + PLAYERHALFWIDTH) >> 4));
+}
 bool Game::boxCollides(int x, int y, int z, int w, int h) {
     if(y < 0) return true;
     for(int bx = x / 16; bx <= (x + w) / 16; bx++)
@@ -688,10 +779,13 @@ void Game::moveAndCollide(int dx, int dy, int dz) {
 
     int ny = y + dy;
     if(playerCollides(x, ny, z)) {
+        int step = (dy < 0) ? 1 : -1;
+        while(playerCollides(x, ny, z) && ny >= 0 && ny <= WORLD_SY * BLOCKSIZE)
+            ny += step;
         if(dy < 0) {
             int speed = -velYsub * JUMP_AIRTIME / VERT_SUBPIXEL;
             int over = speed - MINFALLDAMAGESPEED;
-            if(over > 0 && !world.creative()) {
+            if(over > 0 && !world.creative() && !inWaterAt(x, ny, z)) {
                 int dmg = smul446(over, FALLDAMAGESCALING);
                 int hp = (int)pl.health - dmg;
                 if(hp <= 0) {
@@ -703,10 +797,6 @@ void Game::moveAndCollide(int dx, int dy, int dz) {
         }
         velYsub = 0;
         posYsub = 0;
-
-        int step = (dy < 0) ? 1 : -1;
-        while(playerCollides(x, ny, z) && ny >= 0 && ny <= WORLD_SY * BLOCKSIZE)
-            ny += step;
         y = ny;
     } else
         y = ny;
@@ -727,13 +817,27 @@ void Game::miscInputs(const Input& in) {
     }
     renderer.setCamRot(pl.rot);
     int sinY = (int)renderer.sinYaw(), cosY = (int)renderer.cosYaw();
-    int fwd = smul446(in.forward, SPEEDFACTOR);
+    swimming = inWaterAt(playerX, playerY, playerZ);
+    int fwd = smul446(in.forward, swimming ? SWIM_SPEEDFACTOR : SPEEDFACTOR);
 
     int dx = smul446(fwd, sinY);
     int dz = smul446(fwd, cosY);
     bool grounded = playerCollides(playerX, playerY - 1, playerZ);
     pl.onGround = false;
-    if(grounded && in.jump) {
+    if(swimming) {
+        // swimming against a one-block bank lifts the player onto it
+        bool climb = (dx | dz) && playerCollides(playerX + dx, playerY, playerZ + dz) &&
+                     !playerCollides(playerX + dx, playerY + BLOCKSIZE, playerZ + dz);
+        if(climb)
+            velYsub = SWIM_CLIMB;
+        else if(in.jump)
+            velYsub = SWIM_IMPULSE;
+        else if(grounded) {
+            velYsub = 0;
+            posYsub = 0;
+        } else
+            velYsub = std::max(velYsub - SWIM_GRAVITY, -SWIM_SINK);
+    } else if(grounded && in.jump) {
         velYsub = JUMPSTRENGTH * VERT_SUBPIXEL / JUMP_AIRTIME;
         posYsub = 0;
     } else if(grounded) {
@@ -779,6 +883,8 @@ void Game::updateAllItems() {
         if(blockIsSolid(world.getBlock(bx, nby, bz))) {
             e.y = (nby + 1) * 16;
             e.vy = 0;
+            e.vx /= 2;
+            e.vz /= 2;
             if(e.id == ENTITY_FALLINGSAND) {
                 world.setBlock(bx, e.y / 16, bz, BLOCK_SAND);
                 e.active = false;
@@ -786,6 +892,19 @@ void Game::updateAllItems() {
             }
         } else
             e.y = ny;
+        if(e.vx | e.vz) { // blast-thrown: walls tested at the centre height, world edge is a wall
+            int cy = (e.y + 8) / 16, nx = e.x + e.vx, nz = e.z + e.vz;
+            if((unsigned)nx >= (unsigned)(world.worldSX() * BLOCKSIZE) ||
+               blockIsSolid(world.getBlock(nx / 16, cy, bz)))
+                e.vx = 0;
+            else
+                e.x = nx;
+            if((unsigned)nz >= (unsigned)(world.worldSZ() * BLOCKSIZE) ||
+               blockIsSolid(world.getBlock(e.x / 16, cy, nz / 16)))
+                e.vz = 0;
+            else
+                e.z = nz;
+        }
         if(e.id == ENTITY_FALLINGSAND) continue;
         if(e.id == ENTITY_LITDYNAMITE) {
             if(--e.fuse <= 0) {
@@ -1099,6 +1218,14 @@ void Game::finishRender() {
     RayHit hit = rayCast();
     if(hit.mob < 0 && hit.id != BLOCK_AIR && hit.id != -1 && hit.length >= 0)
         renderer.renderOverlay(world, hit.bx, hit.by, hit.bz, 0);
+    int eyeY = playerY + (pl.crouching ? PLAYERCROUCHCAMHEIGHT : PLAYERCAMHEIGHT);
+    if(blockIsWater(world.getBlock(
+           (playerX + PLAYERHALFWIDTH) >> 4, eyeY >> 4, (playerZ + PLAYERHALFWIDTH) >> 4)))
+        for(int y = 0; y < SCREEN_HEIGHT; y++) {
+            uint8_t* row = fb.px[y];
+            for(int x = y & 1; x < SCREEN_WIDTH; x += 2)
+                row[x] |= 1;
+        }
     drawCrosshair();
     drawHotbar();
 }
@@ -1123,6 +1250,7 @@ void Game::worldFrame(const Input& in) {
     updateAllItems();
     if(world.mobsOn()) updateAllMobs();
     doRandomTicks();
+    flowWater();
     simulateFurnaces(); // every furnace in the active window smelts, GUI open or not
     if(gameOverPending) {
         gameOverPending = false;

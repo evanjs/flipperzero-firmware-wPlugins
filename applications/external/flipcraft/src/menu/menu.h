@@ -18,7 +18,7 @@ enum class Action {
 struct Result {
     Action action = Action::Quit;
     char path[256] = {0}; // full data path of the .fcw save to open or create
-    FlipcraftWorldParams params{0, 16, 0}; // what the creation screen was left at
+    FlipcraftWorldParams params{0, 16, 0, 0}; // what the creation screen was left at
 };
 
 // Owns its own ViewDispatcher; the caller keeps ownership of gui and storage.

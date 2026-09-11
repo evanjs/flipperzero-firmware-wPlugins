@@ -28,7 +28,7 @@ static bool flipcraft_worldgen_generate(
     if(ok) {
         fcgen::Writer out = {storageWriteAt, file};
         ok = fcgen::generate(
-            params->chunks, params->seed, params->flags, out, progress, progress_ctx);
+            params->chunks, params->seed, params->flags, params->type, out, progress, progress_ctx);
         storage_file_close(file);
         if(!ok) storage_simply_remove(storage, path); // no truncated saves
     }

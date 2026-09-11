@@ -65,10 +65,28 @@ constexpr int MOB_BLAST_DMG = 7; // ~90% of MAXHEALTH
 constexpr int MOB_DEADZONE = 12; // sub-px a chase target may stray before re-aim
 constexpr int MOB_RETARGET_TICKS = 6; // ~0.5 s reaction delay between re-aims
 constexpr int DYNAMITE_FUSE_TICKS = 38; // ~3 s at the 80 ms tick
+constexpr int DYNAMITE_CHAIN_FUSE =
+    6; // blast-primed: 6 + rand(12) ticks = 0.5..1.4 s, as Minecraft's 10 + rand(20)
+constexpr int DYNAMITE_CHAIN_RND = 12;
+constexpr int DYNAMITE_KNOCK =
+    12; // blast push at zero distance, sub-px/tick, falls to 0 at MOB_BLAST_RANGE
+constexpr int DYNAMITE_KNOCK_UP =
+    10; // vertical kick: >= 10 clears the crater rim on the first tick
 constexpr int LEAVES_SAPLING_PROBABILITY = 50;
 constexpr int LEAVES_STICK_PROBABILITY = 70;
 constexpr int LEAVES_APPLE_PROBABILITY = 80;
 constexpr int LEAF_LOG_RADIUS = 3;
+constexpr int SWIM_GRAVITY = 8; // velYsub per tick in water (air: GRAVITY*16/4 = 60)
+constexpr int SWIM_SINK = 24; // terminal sink speed, 1.5 px/tick
+constexpr int SWIM_IMPULSE = 96; // one jump tap in water: 6 px/tick, ~1.7 block rise
+constexpr int SWIM_SPEEDFACTOR = SPEEDFACTOR / 2;
+constexpr int SWIM_DEPTH = 6; // "in water" is tested this far above the feet (MC: bbox -0.4)
+constexpr int SWIM_CLIMB = 128; // lift when swimming against a one-block bank (MC: motionY 0.3)
+constexpr int MOB_SWIM_VY = 4; // creatures rise at this px/tick in water, as if holding jump
+constexpr int WATER_RANGE = 7; // flowing levels 1..7 beyond a source, as Minecraft
+constexpr int WATER_BATCH =
+    96; // cells one flow tick may fill over the whole ring (r=16 diamond rim = 64)
+constexpr int WATER_TICK_DIV = 3; // flow advances one cell every 3 ticks (~0.24 s)
 
 static_assert(CHUNK_SIZE == 8, "block addressing assumes 8-block chunks");
 static_assert((1 << CHUNK_SHIFT) == CHUNK_SIZE, "CHUNK_SHIFT must match CHUNK_SIZE");
@@ -112,6 +130,9 @@ enum Block : uint8_t {
     BLOCK_FURNACE = 0xE,
     BLOCK_CHEST = 0xF,
     BLOCK_DYNAMITE = 0x10,
+    // byte = 0x14 | level<<5: level 0 = source, 1..7 flowing; 0x15 = falling
+    BLOCK_WATER = 0x14,
+    BLOCK_WATER_FALL = 0x15,
 };
 
 enum Item : uint8_t {
@@ -182,6 +203,7 @@ constexpr uint8_t BLOCK_PALETTE[] = {
     BLOCK_FURNACE,
     BLOCK_CHEST,
     BLOCK_DYNAMITE,
+    BLOCK_WATER,
 };
 constexpr int PALETTE_COUNT = (int)(sizeof(BLOCK_PALETTE) / sizeof(BLOCK_PALETTE[0]));
 
@@ -219,13 +241,14 @@ constexpr int BLOCKTYPE_STONE = 0, BLOCKTYPE_WOOD = 1, BLOCKTYPE_SOFT = 2, BLOCK
 // "Transparent": a face of an adjacent full block is visible through it.
 constexpr uint32_t BLOCKS_TRANSPARENT = (1u << BLOCK_AIR) | (1u << BLOCK_LEAVES) |
                                         (1u << BLOCK_SAPLING) | (1u << BLOCK_GLASS) |
-                                        (1u << BLOCK_CHEST);
+                                        (1u << BLOCK_CHEST) | (0x3u << BLOCK_WATER);
 // "Full": renders as a full cube via face culling (everything except the
 // mesh-quad blocks: air, sapling cross, small chest box).
 constexpr uint32_t BLOCKS_NOT_FULL = (1u << BLOCK_AIR) | (1u << BLOCK_SAPLING) |
                                      (1u << BLOCK_CHEST);
 // "Solid": collides with the player and stops falling items.
-constexpr uint32_t BLOCKS_SOLID = ~((1u << BLOCK_AIR) | (1u << BLOCK_SAPLING));
+constexpr uint32_t BLOCKS_SOLID =
+    ~((1u << BLOCK_AIR) | (1u << BLOCK_SAPLING) | (0x3u << BLOCK_WATER));
 // Entities that render as a small textured cube (the rest are cross sprites).
 constexpr uint32_t ENTITIES_NOT_BLOCKITEM = (1u << ENTITY_STICK) | (1u << ENTITY_APPLE) |
                                             (1u << ENTITY_COAL) | (1u << ENTITY_FALLINGSAND) |
@@ -242,6 +265,16 @@ inline bool blockIsSolid(uint8_t id) {
 }
 inline bool itemIsBlockItem(uint8_t id) {
     return !((ENTITIES_NOT_BLOCKITEM >> (id & 0x1F)) & 1u);
+}
+inline bool blockIsWater(uint8_t b) {
+    return (b & 0x1E) == BLOCK_WATER;
+}
+// falling water feeds its neighbours like a source (level 0) but is not one
+inline int waterLevel(uint8_t b) {
+    return (b & 1) ? 0 : (b >> 5);
+}
+inline uint8_t waterBlock(int level) {
+    return (uint8_t)(BLOCK_WATER | (level << 5));
 }
 
 enum Texture : uint8_t {
@@ -290,6 +323,7 @@ enum Texture : uint8_t {
     TEX_BEEFRONT = 0x9B,
     TEX_BEESIDE = 0x9C,
     TEX_BEETOP = 0x9D,
+    TEX_WATER = 0x9E,
 };
 
 enum Quad : uint8_t {
@@ -343,22 +377,6 @@ constexpr float BOB_SPEED = 0.35f;
 constexpr float BOB_EASE = 0.20f;
 constexpr float CAM_BOB_AMPLITUDE = 1.3f;
 
-// Shaders (FlipcraftFlagShaders). One fixed sun, 50 degrees above the horizon
-// and 20 degrees off the +X axis, so no shadow runs exactly along a block edge
-// and a glass pane throws a legible grid instead of a smear. Deliberately not
-// the RTX day/night arc: a sun that never moves means the baked shadows are
-// computed once per chunk load and never go stale on their own, which is the
-// whole reason this is affordable here.
-//   (cos50*cos20, sin50, cos50*sin20)
-constexpr float SUN_DIR_X = 0.60402f;
-constexpr float SUN_DIR_Y = 0.76604f;
-constexpr float SUN_DIR_Z = 0.21985f;
-// Voxel boundaries a shadow ray may cross before it is declared unobstructed.
-constexpr int SHADOW_MAX_STEPS = 24;
-// Per-chunk budget of 8x8 masks for faces the shadow edge cuts through; faces
-// past it fall back to a uniform lit/dark state (see bakeFaceShadow).
-constexpr int SHADOW_MASKS_PER_CHUNK = 96;
-
 // floor(x) -> int without a libm call. vcvt truncates toward zero (1 cycle on
 // M4F), so correct downward for negatives that have a fractional part.
 inline int ifloor(float x) {
@@ -383,15 +401,8 @@ struct World {
     // chunk (re)load, or an edit on a shared face of a neighbouring chunk).
     // The renderer compares it against its cached mesh and rebuilds lazily.
     uint16_t slotGen[WINDOW_CHUNKS][WINDOW_CHUNKS];
-    // World-space box of the cells changed since the slot's mesh was last
-    // baked (x0 > x1: nothing). The renderer re-bakes only the faces whose
-    // shadow rays can cross it, carries the rest over, then empties it.
-    struct DirtyBox {
-        int16_t x0, x1, z0, z1;
-        int8_t y0, y1;
-    };
-    mutable DirtyBox slotBox[WINDOW_CHUNKS][WINDOW_CHUNKS];
     uint8_t slotIdle[WINDOW_CHUNKS][WINDOW_CHUNKS]; // ticks since the last edit while dirty
+    uint8_t slotWet[WINDOW_CHUNKS][WINDOW_CHUNKS]; // water may still spread here (Game::flowWater)
 
     int centerCX = -2, centerCZ = -2;
     bool loadPending = false; // chunks of the current ring still on disk
@@ -411,9 +422,6 @@ struct World {
     }
     bool mobsOn() const {
         return !(hdrFlags & FlipcraftFlagMobsOff);
-    }
-    bool shadersOn() const {
-        return (hdrFlags & FlipcraftFlagShaders) != 0;
     }
     bool farDraw() const {
         return !(hdrFlags & FlipcraftFlagNearOnly);
@@ -457,49 +465,14 @@ struct World {
         return &slot[sx][sz][0][0][0];
     }
 
-    static DirtyBox cellBox(int x, int y, int z) {
-        return {(int16_t)x, (int16_t)x, (int16_t)z, (int16_t)z, (int8_t)y, (int8_t)y};
-    }
-    // Invalidate the cached mesh of chunk (cx,cz) if it is resident, recording
-    // the world-space box of cells that changed.
-    void bumpRegion(int cx, int cz, const DirtyBox& r) {
+    // Invalidate the cached mesh of chunk (cx,cz) if it is resident.
+    void bumpRegion(int cx, int cz) {
         int sx, sz;
-        if(!chunkData(cx, cz, sx, sz)) return;
-        slotGen[sx][sz]++;
-        DirtyBox& b = slotBox[sx][sz];
-        if(b.x0 > b.x1) {
-            b = r;
-            return;
-        }
-        if(r.x0 < b.x0) b.x0 = r.x0;
-        if(r.x1 > b.x1) b.x1 = r.x1;
-        if(r.z0 < b.z0) b.z0 = r.z0;
-        if(r.z1 > b.z1) b.z1 = r.z1;
-        if(r.y0 < b.y0) b.y0 = r.y0;
-        if(r.y1 > b.y1) b.y1 = r.y1;
+        if(chunkData(cx, cz, sx, sz)) slotGen[sx][sz]++;
     }
-    // Every resident chunk a shadow ray can reach the changed box from: the
-    // sun sits at +x +z, so the box shades chunks down-light of it, up to
-    // 0.8 blocks in x and 0.3 in z per block of height (see rayCanReach).
-    void bumpReach(const DirtyBox& r) {
-        const int h = r.y1 + 2, rx = (h * 4 + 4) / 5 + 1, rz = (h * 3 + 9) / 10 + 1;
-        for(int sx = 0; sx < WINDOW_CHUNKS; sx++)
-            for(int sz = 0; sz < WINDOW_CHUNKS; sz++) {
-                const int cx = slotCX[sx][sz], cz = slotCZ[sx][sz];
-                if(cx < 0) continue;
-                const int X0 = cx << CHUNK_SHIFT, Z0 = cz << CHUNK_SHIFT;
-                if(r.x1 - X0 < -1 || r.z1 - Z0 < -1) continue;
-                if(r.x0 - (X0 + CHUNK_MASK) > rx || r.z0 - (Z0 + CHUNK_MASK) > rz) continue;
-                bumpRegion(cx, cz, r);
-            }
-    }
-    // Every resident chunk: all baked shadows are stale.
-    void bumpAll() {
-        for(int sx = 0; sx < WINDOW_CHUNKS; sx++)
-            for(int sz = 0; sz < WINDOW_CHUNKS; sz++) {
-                slotGen[sx][sz]++;
-                slotBox[sx][sz] = {-32768, 32767, -32768, 32767, -128, 127};
-            }
+    void markWet(int cx, int cz) {
+        int sx, sz;
+        if(chunkData(cx, cz, sx, sz)) slotWet[sx][sz] = 1;
     }
 
     void setBlock(int x, int y, int z, uint8_t id) {
@@ -510,25 +483,35 @@ struct World {
         if(slotCX[sx][sz] != cx || slotCZ[sx][sz] != cz) return;
         uint8_t& cell = slot[sx][sz][y][z & CHUNK_MASK][x & CHUNK_MASK];
         if(cell == id) return;
+        const bool wet = id == BLOCK_AIR || blockIsWater(id) || blockIsWater(cell);
         cell = id;
         revision++;
         slotDirty[sx][sz] = true;
         slotIdle[sx][sz] = 0;
-        const DirtyBox c = cellBox(x, y, z);
-        bumpRegion(cx, cz, c);
-        // With traced shadows the block's shadow lands down-light of it, so
-        // those chunks re-bake the faces it can reach.
-        if(shadersOn()) bumpReach(c);
+        bumpRegion(cx, cz);
         // Edits on a chunk border also change which faces the neighbour shows.
         int lx = x & CHUNK_MASK, lz = z & CHUNK_MASK;
         if(lx == 0)
-            bumpRegion(cx - 1, cz, c);
+            bumpRegion(cx - 1, cz);
         else if(lx == CHUNK_MASK)
-            bumpRegion(cx + 1, cz, c);
+            bumpRegion(cx + 1, cz);
         if(lz == 0)
-            bumpRegion(cx, cz - 1, c);
+            bumpRegion(cx, cz - 1);
         else if(lz == CHUNK_MASK)
-            bumpRegion(cx, cz + 1, c);
+            bumpRegion(cx, cz + 1);
+        // A new hole may be fed from any side, new water spreads from here,
+        // water that was overwritten stops feeding its neighbours.
+        if(wet) {
+            markWet(cx, cz);
+            if(lx == 0)
+                markWet(cx - 1, cz);
+            else if(lx == CHUNK_MASK)
+                markWet(cx + 1, cz);
+            if(lz == 0)
+                markWet(cx, cz - 1);
+            else if(lz == CHUNK_MASK)
+                markWet(cx, cz + 1);
+        }
         if(id != BLOCK_AIR) {
             if(y > slotMaxY[sx][sz]) slotMaxY[sx][sz] = y;
         } else if(y == slotMaxY[sx][sz]) {

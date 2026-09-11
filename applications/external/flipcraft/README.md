@@ -8,8 +8,8 @@ chests, tame a wolf and try to outlive creepers and your own dynamite.
 
 Flipcraft is an independent project by ApertureFox Technology, written from
 scratch for this device: a software rasterizer with a depth buffer, cached
-chunk meshes, traced sun shadows and a world that streams from the SD card
-and never has to fit in memory at once.
+chunk meshes and a world that streams from the SD card and never has to fit
+in memory at once.
 
 <p align="center">
   <img src=".catalog/screenshots/1.png" width="32%"/>
@@ -51,8 +51,8 @@ Each world carries its own settings, chosen at creation and editable later:
 | Setting | Options |
 |---|---|
 | Gamemode | **Survival** - respawn on death. **Hardmode** - death deletes the world. **Creative** - infinite blocks from a picker, no damage, no drops. |
+| Terrain | **Normal** - hills, forests, deserts and ravines. **Flat** - a single level plain five courses deep (bedrock, two stone, dirt, grass) with trees, trunks and a house. **Superflat** - the same plain, completely bare: no trees, no trunks, no stone piles, no house. **Woods** - normal relief without deserts, planted twice as densely. Baked into the world at creation. |
 | Mobs | on / off |
-| Shaders | Sunlight is traced through the world block by block, glass included. Shadows are drawn as clean outlines, so textures stay exactly as drawn in light and in shade. |
 | Draw distance | **Far** renders the whole 3x3 chunk ring around you. **Near** renders only the chunk you stand in and is the lightest mode in RAM and time. |
 
 ## Gameplay
@@ -146,14 +146,6 @@ what a frame draws: no voxel is scanned and no ray is cast per frame. The
 rasterizer keeps colour and a 7-bit depth in the same byte, so one 8 KB
 buffer is both the framebuffer and the z-buffer, and it samples textures
 with perspective correction every eight pixels.
-
-With shaders on, a fixed sun at 50 degrees is traced through the voxel grid
-when a chunk is built: five probe rays settle uniform faces, and only faces
-the shadow edge cuts through pay for a full 8x8 per-texel mask. Glass stops
-light only where its frame has ink. When a block changes, faces whose rays
-cannot reach the edited cells keep their previous bake, so an edit costs a
-few dozen rays instead of a whole chunk. Shadows are then drawn as the
-outline of their silhouette, never as a pattern over the texture.
 
 ## Building
 

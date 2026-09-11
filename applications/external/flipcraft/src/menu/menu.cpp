@@ -49,6 +49,9 @@ constexpr uint8_t SIZE_CHUNKS[4] = {16, 32, 64, 128};
 static const char* const SIZE_LABELS[4] = {"128x128", "256x256", "512x512", "1024x1024"};
 
 static const char* const MODE_LABELS[3] = {"Survival", "Hardmode", "Creative"};
+// Index == FlipcraftWorldType, stored in header byte 37.
+static const char* const TYPE_LABELS[FlipcraftWorldCount] =
+    {"Normal", "Flat", "Superflat", "Woods"};
 static const char* const ON_OFF[2] = {"Off", "On"};
 static const char* const DIST_LABELS[2] = {"Near", "Far"};
 
@@ -83,8 +86,8 @@ enum CreateRow : uint32_t {
     ROW_NAME = 0,
     ROW_SEED,
     ROW_MODE,
+    ROW_TYPE,
     ROW_MOBS,
-    ROW_SHADERS,
     ROW_DIST,
     ROW_SIZE,
     ROW_CREATE,
@@ -93,8 +96,8 @@ enum CreateRow : uint32_t {
 };
 enum SettingsRow : uint32_t {
     SROW_MODE = 0,
+    SROW_TYPE,
     SROW_MOBS,
-    SROW_SHADERS,
     SROW_DIST,
     SROW_SAVE,
     SROW_EXIT,
@@ -130,7 +133,7 @@ struct MenuApp {
     char name_buf[NAME_LEN] = {0};
     char seed_text[16] = {0};
     uint32_t seed = 0;
-    uint8_t mode_idx = 0, mobs_idx = 0, shaders_idx = 0, dist_idx = 1, size_idx = 0;
+    uint8_t mode_idx = 0, type_idx = 0, mobs_idx = 0, dist_idx = 1, size_idx = 0;
 
     char text_buf[NAME_LEN] = {0};
     char chosen_template[256] = {0};
@@ -350,6 +353,8 @@ void open_info(MenuApp* app) {
         const uint8_t flags = hdr[FLIPCRAFT_HDR_FLAGS_OFFSET];
         uint8_t mode = (uint8_t)(flags & FlipcraftFlagModeMask);
         if(mode > FlipcraftModeCreative) mode = FlipcraftModeSurvival;
+        uint8_t type = hdr[FLIPCRAFT_HDR_TYPE_OFFSET];
+        if(type >= FlipcraftWorldCount) type = FlipcraftWorldNormal;
         uint32_t cx = u16(6), cz = u16(8);
         snprintf(
             app->info_text,
@@ -357,7 +362,8 @@ void open_info(MenuApp* app) {
             "%s\n"
             "World: %lu x %lu blocks\n"
             "Mode: %s\n"
-            "Mobs %s, shaders %s\n"
+            "Terrain: %s\n"
+            "Mobs: %s\n"
             "Draw: %s\n"
             "Format: v%lu, %lu KB\n"
             "Seed/rng: %lu\n"
@@ -366,8 +372,8 @@ void open_info(MenuApp* app) {
             (unsigned long)(cx * 8),
             (unsigned long)(cz * 8),
             MODE_LABELS[mode],
+            TYPE_LABELS[type],
             ON_OFF[(flags & FlipcraftFlagMobsOff) ? 0 : 1],
-            ON_OFF[(flags & FlipcraftFlagShaders) ? 1 : 0],
             DIST_LABELS[(flags & FlipcraftFlagNearOnly) ? 0 : 1],
             (unsigned long)u16(4),
             (unsigned long)(bytes / 1024),
@@ -399,7 +405,6 @@ void build_result_path(MenuApp* app, const char* stem) {
 uint8_t form_flags(const MenuApp* app) {
     uint8_t f = (uint8_t)(app->mode_idx & FlipcraftFlagModeMask);
     if(!app->mobs_idx) f |= FlipcraftFlagMobsOff;
-    if(app->shaders_idx) f |= FlipcraftFlagShaders;
     if(!app->dist_idx) f |= FlipcraftFlagNearOnly;
     return f;
 }
@@ -415,15 +420,16 @@ void form_changed(VariableItem* item) {
             app->mode_idx = idx;
             variable_item_set_current_value_text(item, MODE_LABELS[idx]);
             return;
+        case ROW_TYPE:
+            app->type_idx = idx;
+            variable_item_set_current_value_text(item, TYPE_LABELS[idx]);
+            return;
         case ROW_SIZE:
             app->size_idx = idx;
             variable_item_set_current_value_text(item, SIZE_LABELS[idx]);
             return;
         case ROW_MOBS:
             app->mobs_idx = idx;
-            break;
-        case ROW_SHADERS:
-            app->shaders_idx = idx;
             break;
         case ROW_DIST:
             app->dist_idx = idx;
@@ -436,9 +442,6 @@ void form_changed(VariableItem* item) {
         switch(row) {
         case SROW_MOBS:
             app->mobs_idx = idx;
-            break;
-        case SROW_SHADERS:
-            app->shaders_idx = idx;
             break;
         case SROW_DIST:
             app->dist_idx = idx;
@@ -473,21 +476,22 @@ void open_form(MenuApp* app, FormMode mode) {
         it = variable_item_list_add(l, "Gamemode", 3, form_changed, app);
         variable_item_set_current_value_index(it, app->mode_idx);
         variable_item_set_current_value_text(it, MODE_LABELS[app->mode_idx]);
+        it = variable_item_list_add(l, "Terrain", FlipcraftWorldCount, form_changed, app);
+        variable_item_set_current_value_index(it, app->type_idx);
+        variable_item_set_current_value_text(it, TYPE_LABELS[app->type_idx]);
     } else {
-        // The mode and the size are baked into the terrain and the header at
-        // creation time, so here the mode is shown as plain text: one value,
-        // no arrows, no padlock.
+        // The mode, the terrain and the size are baked into the world and the
+        // header at creation time, so here they are shown as plain text: one
+        // value, no arrows, no padlock.
         it = variable_item_list_add(l, "Gamemode", 1, nullptr, app);
         variable_item_set_current_value_text(it, MODE_LABELS[app->mode_idx]);
+        it = variable_item_list_add(l, "Terrain", 1, nullptr, app);
+        variable_item_set_current_value_text(it, TYPE_LABELS[app->type_idx]);
     }
 
     it = variable_item_list_add(l, "Mobs", 2, form_changed, app);
     variable_item_set_current_value_index(it, app->mobs_idx);
     variable_item_set_current_value_text(it, ON_OFF[app->mobs_idx]);
-
-    it = variable_item_list_add(l, "Shaders", 2, form_changed, app);
-    variable_item_set_current_value_index(it, app->shaders_idx);
-    variable_item_set_current_value_text(it, ON_OFF[app->shaders_idx]);
 
     it = variable_item_list_add(l, "Draw dist", 2, form_changed, app);
     variable_item_set_current_value_index(it, app->dist_idx);
@@ -508,14 +512,14 @@ void open_form(MenuApp* app, FormMode mode) {
 }
 
 // Fresh creation form: random seed, everything else at its documented default
-// (survival, no mobs, no shaders, full draw distance, smallest world).
+// (survival, normal terrain, no mobs, full draw distance, smallest world).
 void open_create(MenuApp* app) {
     snprintf(app->name_buf, sizeof(app->name_buf), "New world");
     app->seed = furi_hal_random_get();
     snprintf(app->seed_text, sizeof(app->seed_text), "%lu", (unsigned long)app->seed);
     app->mode_idx = 0;
+    app->type_idx = 0;
     app->mobs_idx = 0;
-    app->shaders_idx = 0;
     app->dist_idx = 1;
     app->size_idx = 0;
     open_form(app, FORM_CREATE);
@@ -532,8 +536,9 @@ void open_settings(MenuApp* app) {
     const uint8_t flags = hdr[FLIPCRAFT_HDR_FLAGS_OFFSET];
     app->mode_idx = (uint8_t)(flags & FlipcraftFlagModeMask);
     if(app->mode_idx > FlipcraftModeCreative) app->mode_idx = FlipcraftModeSurvival;
+    app->type_idx = hdr[FLIPCRAFT_HDR_TYPE_OFFSET];
+    if(app->type_idx >= FlipcraftWorldCount) app->type_idx = FlipcraftWorldNormal;
     app->mobs_idx = (flags & FlipcraftFlagMobsOff) ? 0 : 1;
-    app->shaders_idx = (flags & FlipcraftFlagShaders) ? 1 : 0;
     app->dist_idx = (flags & FlipcraftFlagNearOnly) ? 0 : 1;
     open_form(app, FORM_SETTINGS);
 }
@@ -786,6 +791,7 @@ Result run(Gui* gui, Storage* storage) {
     result.params.chunks = SIZE_CHUNKS[app->size_idx & 3];
     result.params.seed = app->seed;
     result.params.flags = form_flags(app);
+    result.params.type = app->type_idx;
     strncpy(result.path, app->result_path, sizeof(result.path) - 1);
     delete app;
     return result;
