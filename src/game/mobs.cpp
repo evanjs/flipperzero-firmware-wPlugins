@@ -110,11 +110,12 @@ void Game::hurtMobFrom(int index,int dmg,int srcX,int srcZ,uint8_t attacker){
 }
 
 void Game::explodeAt(int cx,int cy,int cz){
+    int ex=cx*16+8, ey=cy*16+8, ez=cz*16+8;
     for(int by=cy-1;by<=cy+1;by++)
     for(int bz=cz-1;bz<=cz+1;bz++)
     for(int bx=cx-1;bx<=cx+1;bx++){
         if(world.getBlock(bx,by,bz)==BLOCK_DYNAMITE){
-            igniteDynamite(bx,by,bz,3+(rng()&3));
+            igniteDynamite(bx,by,bz,DYNAMITE_CHAIN_FUSE+((rng()*DYNAMITE_CHAIN_RND)>>8));
             continue;
         }
         int be=findBlockEntity(bx,by,bz);
@@ -133,7 +134,21 @@ void Game::explodeAt(int cx,int cy,int cz){
             else if(a==BLOCK_SAPLING){createEntity(bx,yy,bz,ENTITY_SAPLING);world.setBlock(bx,yy,bz,BLOCK_AIR);}
             else break; }
     }
-    int ex=cx*16+8, ey=cy*16+8, ez=cz*16+8;
+    // after the crater loop: dynamite it just primed is thrown by this blast too
+    for(auto& e:items){
+        if(e.id!=ENTITY_LITDYNAMITE) continue;
+        int dx=e.x-ex, dy=e.y+8-ey, dz=e.z-ez;
+        int ax=std::abs(dx), az=std::abs(dz), l=std::max(std::max(ax,az),std::abs(dy));
+        if(l>=MOB_BLAST_RANGE) continue;
+        int s=DYNAMITE_KNOCK*(MOB_BLAST_RANGE-l)/MOB_BLAST_RANGE;
+        int len=std::max(ax,az)+(std::min(ax,az)>>1);   // octagonal |(dx,dz)|, within 12% of Euclidean
+        if(len){
+            e.vx=(int8_t)std::clamp(e.vx+dx*s/len,-2*DYNAMITE_KNOCK,2*DYNAMITE_KNOCK);
+            e.vz=(int8_t)std::clamp(e.vz+dz*s/len,-2*DYNAMITE_KNOCK,2*DYNAMITE_KNOCK);
+        }
+        int up=DYNAMITE_KNOCK_UP+(dy>0?dy*s/(2*l):0);
+        if(e.vy<up) e.vy=up;
+    }
     if(std::abs(playerX+PLAYERHALFWIDTH-ex)<MOB_BLAST_RANGE &&
        std::abs(playerZ+PLAYERHALFWIDTH-ez)<MOB_BLAST_RANGE &&
        std::abs(playerY+PLAYERHEIGHT/2-ey)<MOB_BLAST_RANGE){

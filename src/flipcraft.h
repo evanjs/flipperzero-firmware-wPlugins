@@ -65,6 +65,10 @@ constexpr int MOB_BLAST_DMG       = 7;   // ~90% of MAXHEALTH
 constexpr int MOB_DEADZONE        = 12;  // sub-px a chase target may stray before re-aim
 constexpr int MOB_RETARGET_TICKS  = 6;   // ~0.5 s reaction delay between re-aims
 constexpr int DYNAMITE_FUSE_TICKS = 38;  // ~3 s at the 80 ms tick
+constexpr int DYNAMITE_CHAIN_FUSE = 6;   // blast-primed: 6 + rand(12) ticks = 0.5..1.4 s, as Minecraft's 10 + rand(20)
+constexpr int DYNAMITE_CHAIN_RND  = 12;
+constexpr int DYNAMITE_KNOCK      = 12;  // blast push at zero distance, sub-px/tick, falls to 0 at MOB_BLAST_RANGE
+constexpr int DYNAMITE_KNOCK_UP   = 10;  // vertical kick: >= 10 clears the crater rim on the first tick
 constexpr int LEAVES_SAPLING_PROBABILITY = 50;
 constexpr int LEAVES_STICK_PROBABILITY   = 70;
 constexpr int LEAVES_APPLE_PROBABILITY   = 80;

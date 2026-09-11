@@ -524,9 +524,14 @@ void Game::updateAllItems(){
         int ny=e.y+e.vy;
         int bx=e.x/16, bz=e.z/16, nby=ny/16;
         if(ny<0){ny=0;e.vy=0;}
-        if(blockIsSolid(world.getBlock(bx,nby,bz))){ e.y=(nby+1)*16; e.vy=0;
+        if(blockIsSolid(world.getBlock(bx,nby,bz))){ e.y=(nby+1)*16; e.vy=0; e.vx/=2; e.vz/=2;
             if(e.id==ENTITY_FALLINGSAND){ world.setBlock(bx,e.y/16,bz,BLOCK_SAND); e.active=false; continue; } }
         else e.y=ny;
+        if(e.vx|e.vz){   // blast-thrown: walls tested at the centre height, world edge is a wall
+            int cy=(e.y+8)/16, nx=e.x+e.vx, nz=e.z+e.vz;
+            if((unsigned)nx>=(unsigned)(world.worldSX()*BLOCKSIZE)||blockIsSolid(world.getBlock(nx/16,cy,bz))) e.vx=0; else e.x=nx;
+            if((unsigned)nz>=(unsigned)(world.worldSZ()*BLOCKSIZE)||blockIsSolid(world.getBlock(e.x/16,cy,nz/16))) e.vz=0; else e.z=nz;
+        }
         if(e.id==ENTITY_FALLINGSAND)continue;
         if(e.id==ENTITY_LITDYNAMITE){
             if(--e.fuse<=0){

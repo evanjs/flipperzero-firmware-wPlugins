@@ -37,7 +37,7 @@ struct PlayerState {
     bool crouching = false;
 };
 
-struct ItemEnt { int id=0; int x=0,y=0,z=0; int vy=0; int fuse=0; bool active=false; };
+struct ItemEnt { int id=0; int x=0,y=0,z=0; int vy=0; int fuse=0; bool active=false; int8_t vx=0,vz=0; };
 
 // One creature. Behaviour is a 2-bit mode; everything species-specific comes
 // from the MobSpec byte table, everything situational from `timer`/`target`.
