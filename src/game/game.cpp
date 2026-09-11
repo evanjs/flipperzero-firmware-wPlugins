@@ -73,9 +73,8 @@ bool Game::setup(const GameConfig& config) {
     for(auto& m:mobs) m=Mob{};
     loadStorageDirectory();
     loadInventory();
-    // Per-world render settings from the header. Both are read once: the sun
-    // never moves and the draw distance never changes inside a session.
-    renderer.setShaders(world.shadersOn());
+    // Per-world render setting from the header: the draw distance never
+    // changes inside a session.
     renderer.setNearOnly(!world.farDraw());
     screenId=SCR_PLAY; selSlot=-1; cursor=0; score=0; gameOverPending=false; loadedTile=-1;
     exitDelete=false;

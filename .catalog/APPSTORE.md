@@ -12,7 +12,6 @@ Each world carries its own settings, chosen at creation and editable later:
 
 - **Gamemode** - Survival, Hardmode (death deletes the world) or Creative (infinite blocks from a picker, no damage, no drops).
 - **Mobs** - on or off.
-- **Shaders** - sunlight traced through the world; shadows are drawn as clean outlines that never touch the textures.
 - **Draw distance** - Far renders the whole chunk ring around you, Near renders only the chunk you stand in and is the lightest mode in both RAM and time.
 
 ## Gameplay
@@ -21,7 +20,6 @@ Each world carries its own settings, chosen at creation and editable later:
 - Pickaxes, axes, shovels and swords in wood, stone and iron tiers, plus shears and dynamite.
 - Sheep, wolves, creepers and bees. Wolves hunt sheep and creepers on their own and can be tamed with two apples; a tamed wolf guards you and never bites. A creeper stalks you, swells for two seconds and blows a 3x3x3 crater. Bees drop saplings.
 - Dynamite is placed like a block and lit with a short press; adjacent charges chain-react.
-- Glass lets the light through and casts only the shadow of its frame.
 - Eight hearts, fall damage, apples to heal. In Survival you respawn where you died; in Hardmode you do not.
 
 ## Controls

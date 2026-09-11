@@ -130,7 +130,6 @@ bool World::openWorld(const char* dataPath) {
             slotMaxY[sx][sz] = -1;
             slotDirty[sx][sz] = false;
             slotGen[sx][sz] = 0;
-            slotBox[sx][sz] = {1, 0, 1, 0, 1, 0};
             slotIdle[sx][sz] = 0;
         }
     centerCX = centerCZ = -2;
@@ -280,29 +279,15 @@ bool World::flushSlot(int sx, int sz) {
     return ok;
 }
 
-// A slot's content changed: invalidate its cached mesh, the meshes of the
-// four adjacent chunks, whose boundary faces depend on this chunk's blocks,
-// and with shaders every chunk its shadow can fall into. Each is told the
-// whole chunk changed; the renderer works out which faces that can reach.
-static World::DirtyBox chunkBox(int cx, int cz, int top) {
-    const int x0 = cx << CHUNK_SHIFT, z0 = cz << CHUNK_SHIFT;
-    return {(int16_t)x0, (int16_t)(x0 + CHUNK_MASK), (int16_t)z0, (int16_t)(z0 + CHUNK_MASK),
-            0, (int8_t)top};
-}
-
+// A slot's content changed: invalidate its cached mesh and the meshes of the
+// four adjacent chunks, whose boundary faces depend on this chunk's blocks.
 void World::onSlotLoaded(int cx, int cz) {
     revision++; // a freshly streamed chunk must reach the next rendered frame
-    const DirtyBox all = chunkBox(cx, cz, WORLD_SY - 1);
-    bumpRegion(cx, cz, all);
-    bumpRegion(cx - 1, cz, all);
-    bumpRegion(cx + 1, cz, all);
-    bumpRegion(cx, cz - 1, all);
-    bumpRegion(cx, cz + 1, all);
-    // Its blocks reach no higher than its top layer, so neither do its shadows.
-    // A chunk leaving the ring is deliberately not undone: its blocks are
-    // still there, so the shadows it threw stay until something re-bakes them.
-    const int top = slotMaxY[cx % 3][cz % 3];
-    if(shadersOn() && top >= 0) bumpReach(chunkBox(cx, cz, top));
+    bumpRegion(cx, cz);
+    bumpRegion(cx - 1, cz);
+    bumpRegion(cx + 1, cz);
+    bumpRegion(cx, cz - 1);
+    bumpRegion(cx, cz + 1);
 }
 
 bool World::loadChunkDirect(int cx, int cz) {
@@ -425,7 +410,7 @@ void World::closeWorld(int px, int py, int pz, uint8_t rot, uint32_t rng) {
 
     // Exactly the player record, offsets 18..35. It must not reach byte 36:
     // that is the per-world settings byte, and writing past 35 here silently
-    // reset every world's gamemode and shader flags on the way out.
+    // reset every world's gamemode and draw flags on the way out.
     uint8_t buf[18];
     memset(buf, 0, sizeof(buf));
     put_u32(buf + 0, (uint32_t)px);

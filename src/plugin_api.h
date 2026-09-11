@@ -19,19 +19,16 @@
 // Per-world settings, stored in byte 36 of the .fcw header (previously a
 // reserved zero). Every bit is polarised so that a zero byte -- what every
 // world written before this existed, and every bundled template, still has --
-// decodes to exactly the pre-settings behaviour: survival, mobs on, no
-// shaders, full 3x3 draw distance. No format version bump is needed.
+// decodes to exactly the pre-settings behaviour: survival, mobs on, full 3x3
+// draw distance. No format version bump is needed.
 #define FLIPCRAFT_HDR_FLAGS_OFFSET 36u
 
 enum {
     FlipcraftFlagModeMask = 0x03u, // FlipcraftMode
     FlipcraftFlagMobsOff = 0x04u,  // creatures never spawn
-    FlipcraftFlagShaders = 0x08u,  // baked sun shadows in the chunk meshes
     FlipcraftFlagNearOnly = 0x10u, // draw only the chunk the player stands in
-    // 0x20 was a "cheap shaders" variant. There is no cheap way to cast a
-    // shadow that still carries a texture -- a glass frame needs the per-texel
-    // mask, and without it the pane can only smear into a blob -- so the
-    // setting is a plain on/off again and this bit is ignored on read.
+    // 0x08 and 0x20 were the baked sun shadows and their "cheap" variant.
+    // Both bits are ignored on read, so worlds created with them still open.
 };
 
 typedef enum {

@@ -24,33 +24,6 @@ constexpr int NONFULL_MESHES = __builtin_popcount(BLOCKS_NOT_FULL) - 1;   // air
 static NonFullMesh gNonFull[NONFULL_MESHES];
 static uint8_t gNonFullIdx[32];
 
-// Sunlight every quad template can receive: 0 faces away from the sun,
-// 1 grazing light, 2 direct light. The sun is fixed (flipcraft.h), so the
-// table is built once and never touched again.
-static uint8_t gQuadLit[QUAD_COUNT];
-static const float gSun[3] = {SUN_DIR_X, SUN_DIR_Y, SUN_DIR_Z};
-// A shadow ray only ever moves towards +x, +y, +z (see sunVisible).
-static_assert(SUN_DIR_X > 0 && SUN_DIR_Y > 0 && SUN_DIR_Z > 0, "sunVisible assumes a +x +y +z sun");
-
-// Per rebuild: the highest block in the resident ring, and per slot the
-// highest block in any resident chunk a ray can still enter from that chunk
-// (chunks at >= cx and >= cz). A ray above that level meets nothing but air.
-static int8_t gReach[WINDOW_CHUNKS][WINDOW_CHUNKS];
-static int8_t gRingMaxY = WORLD_SY - 1;
-
-// Outward unit normal of a quad template.
-static void quadNormal(int q, float n[3]) {
-    const int (*t)[3] = quadTemplate(q);
-    const float e0[3] = {(float)(t[1][0]-t[0][0]), (float)(t[1][1]-t[0][1]), (float)(t[1][2]-t[0][2])};
-    const float e1[3] = {(float)(t[2][0]-t[1][0]), (float)(t[2][1]-t[1][1]), (float)(t[2][2]-t[1][2])};
-    n[0] = e0[1]*e1[2] - e0[2]*e1[1];
-    n[1] = e0[2]*e1[0] - e0[0]*e1[2];
-    n[2] = e0[0]*e1[1] - e0[1]*e1[0];
-    float len = sqrtf(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
-    if (len < 1e-6f) len = 1.0f;
-    for (int k = 0; k < 3; k++) n[k] = n[k] / len;
-}
-
 // Axis-aligned faces are invisible unless the camera is on their front side;
 // this rejects roughly half of all cached faces with one compare, before any
 // vertex transform. axis<0 marks quads with no single facing plane.
@@ -76,14 +49,6 @@ static void initTables() {
         kFcos[i] = cosf(a);
         kSinYaw[i] = (int8_t)floorf(-sinf(a) * 64.0f);
         kCosYaw[i] = (int8_t)floorf( cosf(a) * 64.0f);
-    }
-
-    for (int q = 0; q < QUAD_COUNT; q++) {
-        float n[3];
-        quadNormal(q, n);
-        float dot = 0;
-        for (int k = 0; k < 3; k++) dot += n[k] * gSun[k];
-        gQuadLit[q] = dot >= 0.65f ? 2 : (dot > 0.05f ? 1 : 0);
     }
 
     int nfCount = 0;
@@ -126,12 +91,6 @@ void Renderer::camRotToMatrix(int pitch, int yaw) {
 }
 void Renderer::setCamRot(uint8_t data) { camRotToMatrix(data >> 4, data & 0xF); }
 
-void Renderer::setShaders(bool on) {
-    if (shaders == on) return;
-    shaders = on;
-    invalidateChunkMeshes();   // every cached mesh was baked the other way
-}
-
 int Renderer::sinYaw() const { return kSinYaw[yawIndex & 0xF]; }
 int Renderer::cosYaw() const { return kCosYaw[yawIndex & 0xF]; }
 float Renderer::camDir(int axis) const { return floorf(matrix[2][axis]*64.0f); }
@@ -142,8 +101,6 @@ void Renderer::invalidateChunkMeshes() {
             cm.cx = cm.cz = -1;
             cm.faces.clear();
             cm.faces.shrink_to_fit();   // release, don't keep the old world's capacity
-            cm.masks.clear();
-            cm.masks.shrink_to_fit();
         }
 }
 
@@ -202,21 +159,6 @@ void Renderer::rasterTri(const Vertex& A,const Vertex& B,const Vertex& C) {
     const bool skipZero   = settings.transparent;
     const uint8_t invMask = settings.inverted ? 1 : 0;
     const bool useOverlay = settings.overlay;
-    // Shadows are drawn as their outline only: on a face the shadow edge
-    // cuts through, the shadowed texels that touch a lit one flip. The
-    // texture itself is never modulated, in light or in shade. A transparent
-    // texture (glass frame, sapling cross) is the object, never shaded.
-    uint8_t edge[8];
-    const bool outline = litMask && !settings.transparent;
-    if (outline) {
-#pragma GCC unroll 1
-        for (int r = 0; r < 8; r++) {
-            const uint8_t m = litMask[r];
-            const uint8_t near = (uint8_t)((m << 1) | (m >> 1) | (r ? litMask[r-1] : 0) |
-                                           (r < 7 ? litMask[r+1] : 0));
-            edge[r] = (uint8_t)(~m & near);
-        }
-    }
 
     const float e0dx = B.y-C.y, e0dy = C.x-B.x, e0c = B.x*C.y - B.y*C.x;
     const float e1dx = C.y-A.y, e1dy = A.x-C.x, e1c = C.x*A.y - C.y*A.x;
@@ -285,7 +227,6 @@ void Renderer::rasterTri(const Vertex& A,const Vertex& B,const Vertex& C) {
 
             if (skipZero && color==0) continue;
             color ^= invMask;
-            if (outline && ((edge[b] >> a) & 1)) color ^= 1;
             if (useOverlay) color ^= row[x] & 1;
             row[x] = (uint8_t)((depth << 1) | color);
         }
@@ -351,12 +292,10 @@ void Renderer::renderQuad(float x,float y,float z,int quadId,uint8_t texId,int t
     settings.transparent  = (texSettings & TS_TRANSPARENT) != 0;
     settings.inverted     = (texSettings & TS_INVERTED) != 0;
     settings.overlay      = (texSettings & TS_OVERLAY) != 0;
-    litLevel = 0; litMask = nullptr;
     drawQuadCam(cam);
 }
 
-void Renderer::drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings,
-                             uint8_t lit,const uint8_t* mask) {
+void Renderer::drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texSettings) {
     const int (*tmpl)[3] = quadTemplate(quadId);
     const float bx = (float)(x << 4), by = (float)(y << 4), bz = (float)(z << 4);
     Vertex cam[4];
@@ -373,7 +312,6 @@ void Renderer::drawBlockQuad(int x,int y,int z,int quadId,uint8_t texId,int texS
     settings.transparent  = (texSettings & TS_TRANSPARENT) != 0;
     settings.inverted     = (texSettings & TS_INVERTED) != 0;
     settings.overlay      = (texSettings & TS_OVERLAY) != 0;
-    litLevel = lit; litMask = mask;
     drawQuadCam(cam);
 }
 
@@ -429,7 +367,6 @@ void Renderer::renderBox(float x0,float y0,float z0,float x1,float y1,float z1,
     settings.transparent  = (texSettings & TS_TRANSPARENT) != 0;
     settings.inverted     = (texSettings & TS_INVERTED) != 0;
     settings.overlay      = (texSettings & TS_OVERLAY) != 0;
-    litMask = nullptr;
     for (int f=0;f<6;f++) {
         Vertex cam[4];
         for (int i=0;i<4;i++) {
@@ -448,7 +385,6 @@ void Renderer::renderBox(float x0,float y0,float z0,float x1,float y1,float z1,
             cam[i] = worldToCam(w);
         }
         texture = (Texture)tex[f];
-        litLevel = 0;
         drawQuadCam(cam);
     }
 }
@@ -476,7 +412,6 @@ void Renderer::renderMob(float x,float y,float z,uint8_t species,uint8_t yaw,uin
     settings.transparent  = false;
     settings.inverted     = (inv & TS_INVERTED) != 0;
     settings.overlay      = false;
-    litMask = nullptr;
 
     int n;
     const MobBox* boxes = mobBoxes(species, n);
@@ -501,7 +436,6 @@ void Renderer::renderMob(float x,float y,float z,uint8_t species,uint8_t yaw,uin
             }
             texture = (Texture)((f==3 && (bx.flags&1)) ? s.texFront :
                                 f>=4 ? s.texTop : s.texSide);
-            litLevel = 0;
             drawQuadCam(cam);
         }
     }
@@ -509,268 +443,18 @@ void Renderer::renderMob(float x,float y,float z,uint8_t species,uint8_t yaw,uin
                TS_CULLBACK|TS_TRANSPARENT|TS_INVERTED);
 }
 
-// One shadow ray, marched through the voxel grid in block units towards the
-// sun (the Raymarcher's shadow() step, on a grid instead of a distance field).
-// A block stops the light unless its texture is drawn with TS_TRANSPARENT, in
-// which case only its ink texels do: glass throws the shadow of its frame and
-// lets the rest of the light through. `viaTex` reports that such a block was
-// crossed, so the caller knows the face needs a per-texel bake.
-__attribute__((noinline)) static bool sunVisible(const World& w, float px, float py, float pz,
-                                                 const int own[3], bool& viaTex) {
-    constexpr float FAR = 1e9f;
-    int vx = ifloor(px), vy = ifloor(py), vz = ifloor(pz);
-
-    // The sample point can already sit inside a block (a floor right under a
-    // glass pane, or the inset faces of the chest, which stay in their own
-    // cell). Its own cell never shades it; anything else does.
-    if (vx != own[0] || vy != own[1] || vz != own[2]) {
-        uint8_t id0 = w.getBlock(vx, vy, vz);
-        if (id0 != BLOCK_AIR) {
-            const FaceTex& ft = gFaceTex[id0 & 0x1F][1];
-            if (!ft.valid || !(ft.set & TS_TRANSPARENT)) return false;
-            viaTex = true;
-            int tu = (int)((px - vx)*8.0f); if (tu<0) tu=0; else if (tu>7) tu=7;
-            int tv = (int)((pz - vz)*8.0f); if (tv<0) tv=0; else if (tv>7) tv=7;
-            uint8_t ink = (uint8_t)((texturePacked(ft.tex)[tv] >> tu) & 1);
-            if (ft.set & TS_INVERTED) ink ^= 1;
-            if (ink) return false;
-        }
-    }
-
-    const int sx = gSun[0] > 0 ? 1 : -1, sy = 1, sz = gSun[2] > 0 ? 1 : -1;
-    const float tdx = gSun[0] != 0 ? fabsf(1.0f/gSun[0]) : FAR;
-    const float tdy = fabsf(1.0f/gSun[1]);
-    const float tdz = gSun[2] != 0 ? fabsf(1.0f/gSun[2]) : FAR;
-    float tmx = gSun[0] != 0 ? (gSun[0] > 0 ? (vx+1-px) : (px-vx)) * tdx : FAR;
-    float tmy = (vy+1-py) * tdy;
-    float tmz = gSun[2] != 0 ? (gSun[2] > 0 ? (vz+1-pz) : (pz-vz)) * tdz : FAR;
-
-    // The ray never comes back down, so once it is above every block it can
-    // still reach it is in open sky. The chunk it is in is resolved once per
-    // chunk crossed, not per step, and looked into only below that chunk's
-    // own top.
-    int ccx = INT32_MIN, ccz = INT32_MIN, cmaxY = -1, reachY = gRingMaxY;
-    const uint8_t* base = nullptr;
-    for (int i = 0; i < SHADOW_MAX_STEPS; i++) {
-        float t;
-        int axis;
-        if (tmx <= tmy && tmx <= tmz)      { t = tmx; tmx += tdx; vx += sx; axis = 0; }
-        else if (tmy <= tmz)               { t = tmy; tmy += tdy; vy += sy; axis = 1; }
-        else                               { t = tmz; tmz += tdz; vz += sz; axis = 2; }
-        if (vy >= WORLD_SY || vy > reachY) return true;
-        const int cx = vx >> CHUNK_SHIFT, cz = vz >> CHUNK_SHIFT;
-        if (cx != ccx || cz != ccz) {
-            ccx = cx; ccz = cz;
-            int csx, csz;
-            base = w.chunkData(cx, cz, csx, csz);
-            if (base) { cmaxY = w.slotMaxY[csx][csz]; reachY = gReach[csx][csz]; }
-            else      { reachY = gRingMaxY; }
-            if (vy > reachY) return true;
-        }
-        if (!base || vy > cmaxY || vy < 0) continue;
-        uint8_t id = base[(vy * CHUNK_SIZE + (vz & CHUNK_MASK)) * CHUNK_SIZE + (vx & CHUNK_MASK)];
-        if (id == BLOCK_AIR) continue;
-
-        // Entered through the face the ray crossed: bottom face on a vertical
-        // step, side texture otherwise.
-        const FaceTex& ft = gFaceTex[id & 0x1F][axis == 1 ? 1 : 2];
-        if (!ft.valid || !(ft.set & TS_TRANSPARENT)) return false;
-        viaTex = true;
-
-        const float hx = px + gSun[0]*t, hy = py + gSun[1]*t, hz = pz + gSun[2]*t;
-        float fu, fv;
-        if (axis == 0)      { fu = hz - ifloor(hz); fv = hy - ifloor(hy); }
-        else if (axis == 1) { fu = hx - ifloor(hx); fv = hz - ifloor(hz); }
-        else                { fu = hx - ifloor(hx); fv = hy - ifloor(hy); }
-        int tu = (int)(fu*8.0f); if (tu<0) tu=0; else if (tu>7) tu=7;
-        int tv = (int)(fv*8.0f); if (tv<0) tv=0; else if (tv>7) tv=7;
-        uint8_t ink = (uint8_t)((texturePacked(ft.tex)[tv] >> tu) & 1);
-        if (ft.set & TS_INVERTED) ink ^= 1;
-        if (ink) return false;
-    }
-    return true;
-}
-
-// The bake bookkeeping from here on runs once per face, not per ray or per
-// pixel: size matters more than speed in a .fal that lives in RAM.
-#pragma GCC push_options
-#pragma GCC optimize("Os")
-
-// Sun state of one face: 0 lit, 1 shadowed, 2 mixed (mask filled, bit u of
-// byte v set = that texel sees the sun). Five probe rays settle the uniform
-// cases; the other faces pay for all 64. Only the Quality level gets here.
-__attribute__((noinline)) static int bakeFaceShadow(const World& w, int gx, int y, int gz, int quad, uint8_t* mask) {
-    if (!gQuadLit[quad]) return 1;
-
-    const int (*t)[3] = quadTemplate(quad);
-    float n[3];
-    quadNormal(quad, n);
-    float base[3], du[3], dv[3];
-    for (int k = 0; k < 3; k++) {
-        const float org = (float)(k == 0 ? gx : (k == 1 ? y : gz));
-        base[k] = org + t[0][k]*(1.0f/16.0f) + n[k]*0.03f;   // lift off the surface
-        du[k] = (float)(t[3][k] - t[0][k]) * (1.0f/16.0f);
-        dv[k] = (float)(t[1][k] - t[0][k]) * (1.0f/16.0f);
-    }
-    const int own[3] = {gx, y, gz};
-    auto rayAt = [&](int u, int v, bool& viaTex) {
-        const float fu = (u + 0.5f) * (1.0f/8.0f), fv = (v + 0.5f) * (1.0f/8.0f);
-        return sunVisible(w, base[0] + du[0]*fu + dv[0]*fv,
-                             base[1] + du[1]*fu + dv[1]*fv,
-                             base[2] + du[2]*fu + dv[2]*fv, own, viaTex);
-    };
-
-    static const uint8_t kProbe[5][2] = {{0,0},{7,0},{0,7},{7,7},{4,4}};
-    bool viaTex = false;
-    int litProbes = 0;
-    uint8_t probeBits[8] = {0};   // probe results in mask layout, reused below
-    for (int i = 0; i < 5; i++)
-        if (rayAt(kProbe[i][0], kProbe[i][1], viaTex)) {
-            litProbes++;
-            probeBits[kProbe[i][1]] |= (uint8_t)(1u << kProbe[i][0]);
-        }
-    // All five agree and nothing see-through was crossed: the face is uniform.
-    if ((litProbes == 0 || litProbes == 5) && !viaTex) return litProbes ? 0 : 1;
-
-    for (int v = 0; v < 8; v++) {
-        const uint8_t probed = (v == 0 || v == 7) ? 0x81 : (v == 4 ? 0x10 : 0);
-        uint8_t bits = probeBits[v];
-        for (int u = 0; u < 8; u++)
-            if (!((probed >> u) & 1) && rayAt(u, v, viaTex)) bits |= (uint8_t)(1u << u);
-        mask[v] = bits;
-    }
-    return 2;
-}
-
-// Face word bits 27-28 hold the sun state; bit 29 marks a face that wanted a
-// per-texel mask and was refused one by the chunk budget.
-constexpr uint32_t FACE_KEY = 0x07FFFFFF;
-constexpr uint32_t FACE_NOMASK = 1u << 29;
-
-// The chunk's previous bake, walked in step with the new scan: both lists
-// are in scan order, so a face is found by advancing a cursor, never searched.
-struct BakeCarry {
-    const uint32_t* faces; size_t count;
-    const uint8_t* masks; size_t maskBytes;
-    size_t at, maskAt;          // cursor: next old face and its mask offset
-    World::DirtyBox box;        // cells changed since that bake
-};
-
-// Can a shadow ray leaving a face of voxel (gx,y,gz) cross a cell of `box`?
-// A ray starts within one block of its voxel and climbs 0.7885 blocks in x
-// and 0.287 in z per block of y; both bounds are rounded up.
-static bool rayCanReach(const World::DirtyBox& b, int gx, int y, int gz) {
-    if (b.x0 > b.x1) return true;
-    const int dyMax = b.y1 - y;
-    if (dyMax < -1 || b.x1 - gx < -1 || b.z1 - gz < -1) return false;
-    const int r = dyMax + 2;
-    return b.x0 - gx <= (r * 4 + 4) / 5 + 1 && b.z0 - gz <= (r * 3 + 9) / 10 + 1;
-}
-
-__attribute__((noinline)) static bool carryFace(BakeCarry& c, uint32_t key, int& state, const uint8_t*& mask) {
-    const uint32_t kv = key & 0x3FF;   // voxel: the scan order
-    while (c.at < c.count && (c.faces[c.at] & 0x3FF) < kv) {
-        if (((c.faces[c.at] >> 27) & 3) == 2) c.maskAt += 8;
-        c.at++;
-    }
-    size_t m = c.maskAt;
-    for (size_t i = c.at; i < c.count && (c.faces[i] & 0x3FF) == kv; i++) {
-        const uint32_t f = c.faces[i];
-        const int s = (f >> 27) & 3;
-        if ((f & FACE_KEY) == key && !(f & FACE_NOMASK)) {
-            if (s == 2) {
-                if (m + 8 > c.maskBytes) return false;
-                mask = c.masks + m;
-            }
-            state = s;
-            return true;
-        }
-        if (s == 2) m += 8;
-    }
-    return false;
-}
-
-// Sun bits of one face word (already shifted): state 0 take the quad's own
-// light, 1 none (plain texture), 2 per-texel mask appended to `scratch`. A
-// face whose rays cannot reach any changed cell keeps its previous bake.
-// Deliberately out of line -- its caller is inlined at every emit site in the
-// scan loop, and inlining this with it costs about 4 KB in a .fal that runs
-// from RAM.
-__attribute__((noinline)) static uint32_t faceSun(
-    const World& w, bool shaders, int gx, int y, int gz, uint32_t key,
-    uint8_t* scratch, int& maskCount, BakeCarry* carry) {
-    if (!shaders) return 0;   // lit: the plain texture
-
-    uint8_t mask[8];
-    const uint8_t* src = mask;
-    int state;
-    if (!(carry && !rayCanReach(carry->box, gx, y, gz) && carryFace(*carry, key, state, src)))
-        state = bakeFaceShadow(w, gx, y, gz, (key >> 10) & 31, mask);
-    if (state != 2) return (uint32_t)state << 27;
-    if (maskCount < SHADOW_MASKS_PER_CHUNK) {
-        memcpy(scratch + maskCount*8, src, 8);
-        maskCount++;
-        return 2u << 27;
-    }
-    // Out of budget: keep whichever uniform state covers most of the face.
-    int litTexels = 0;
-    for (int i = 0; i < 8; i++) litTexels += __builtin_popcount(src[i]);
-    return (litTexels >= 32 ? 0u : 1u << 27) | FACE_NOMASK;
-}
-
-__attribute__((noinline)) static void computeReach(const World& w) {
-    int m = -1;
-    for (int a = 0; a < WINDOW_CHUNKS; a++)
-        for (int b = 0; b < WINDOW_CHUNKS; b++)
-            if (w.slotCX[a][b] >= 0 && w.slotMaxY[a][b] > m) m = w.slotMaxY[a][b];
-    gRingMaxY = (int8_t)m;
-    for (int a = 0; a < WINDOW_CHUNKS; a++)
-        for (int b = 0; b < WINDOW_CHUNKS; b++) {
-            int r = m;
-            if (w.slotCX[a][b] >= 0) {
-                r = -1;
-                for (int c = 0; c < WINDOW_CHUNKS; c++)
-                    for (int d = 0; d < WINDOW_CHUNKS; d++)
-                        if (w.slotCX[c][d] >= w.slotCX[a][b] && w.slotCZ[c][d] >= w.slotCZ[a][b] &&
-                            w.slotMaxY[c][d] > r)
-                            r = w.slotMaxY[c][d];
-            }
-            gReach[a][b] = (int8_t)r;
-        }
-}
-#pragma GCC pop_options
-
 // Rebuild the packed face list for the chunk resident in window slot (sx,sz).
 // Two passes over the chunk's voxels up to its highest non-air layer: the
 // first only counts, so the list is allocated once at exactly its final size
-// (no push_back doubling, no high-water capacity kept between rebuilds). With
-// shaders on the second pass also settles the sun state of every face it
-// emits -- carried over from the previous bake of the same chunk when no ray
-// of the face can cross a changed cell, cast afresh otherwise -- which is why
-// it runs only when the chunk (or a chunk whose shadow reaches it) changed,
-// never per frame.
+// (no push_back doubling, no high-water capacity kept between rebuilds). Runs
+// only when the chunk changed, never per frame.
 void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
-    uint8_t maskScratch[SHADOW_MASKS_PER_CHUNK * 8];
-
     ChunkMesh& cm = chunkMesh[sx][sz];
     const int cx = w.slotCX[sx][sz], cz = w.slotCZ[sx][sz];
-    computeReach(w);
 
-    // Same chunk, same shader setting: the old bake stays until the new list
-    // is settled. Otherwise free it before counting so the peak is one list.
-    BakeCarry carry;
-    BakeCarry* carryPtr = nullptr;
-    if (shaders && cm.cx == cx && cm.cz == cz && !cm.faces.empty()) {
-        carry = {cm.faces.data(), cm.faces.size(), cm.masks.data(), cm.masks.size(),
-                 0, 0, w.slotBox[sx][sz]};
-        carryPtr = &carry;
-    } else {
-        cm.faces.clear();
-        cm.faces.shrink_to_fit();
-        cm.masks.clear();
-        cm.masks.shrink_to_fit();
-    }
-    w.slotBox[sx][sz] = {1, 0, 1, 0, 1, 0};   // consumed
+    // Free the old list before counting so the peak is one list, not two.
+    cm.faces.clear();
+    cm.faces.shrink_to_fit();
     cm.cx = cx; cm.cz = cz; cm.gen = w.slotGen[sx][sz];
 
     const uint8_t (*B)[CHUNK_SIZE][CHUNK_SIZE] = w.slot[sx][sz];
@@ -779,16 +463,12 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
     const int yTop = w.slotMaxY[sx][sz] < 0 ? 0 : w.slotMaxY[sx][sz];
 
     uint32_t* out = nullptr;   // null on the counting pass
-    int count = 0, maskCount = 0;
-    const bool bake = shaders;
+    int count = 0;
     auto emit = [&](int lx, int y, int lz, int quad, uint8_t tex, uint8_t set) {
-        if (out) {
-            const uint32_t key = (uint32_t)lx | ((uint32_t)lz << 3) | ((uint32_t)y << 6) |
-                                 ((uint32_t)quad << 10) | ((uint32_t)tex << 15) |
-                                 ((uint32_t)set << 23);
-            out[count] = key | faceSun(w, bake, bx0 + lx, y, bz0 + lz, key,
-                                       maskScratch, maskCount, carryPtr);
-        }
+        if (out)
+            out[count] = (uint32_t)lx | ((uint32_t)lz << 3) | ((uint32_t)y << 6) |
+                         ((uint32_t)quad << 10) | ((uint32_t)tex << 15) |
+                         ((uint32_t)set << 23);
         count++;
     };
     // A face is visible when the neighbour is a different, see-through block.
@@ -841,9 +521,8 @@ void Renderer::buildChunkMesh(const World& w, int sx, int sz) {
     std::vector<uint32_t> fresh(count);   // exactly count, no doubling
     out = fresh.data();
     count = 0;
-    scan();                     // pass 2: fill and bake; same input, same counts
+    scan();                     // pass 2: fill; same input, same counts
     cm.faces.swap(fresh);
-    std::vector<uint8_t>(maskScratch, maskScratch + (size_t)maskCount*8).swap(cm.masks);
 }
 
 void Renderer::renderScene(const World& w) {
@@ -853,9 +532,9 @@ void Renderer::renderScene(const World& w) {
     winX0 = win.x0; winX1 = win.x1; winZ0 = win.z0; winZ1 = win.z1;
 
     // Near-only draw distance: the window shrinks to the single chunk the
-    // camera stands in, and the other eight slots hand their face lists and
-    // shadow masks back to the allocator. That is where the RAM and most of
-    // the raster time go, so this is the cheap mode in both.
+    // camera stands in, and the other eight slots hand their face lists back
+    // to the allocator. That is where the RAM and most of the raster time go,
+    // so this is the cheap mode in both.
     int onlySX = -1, onlySZ = -1;
     if (nearOnly) {
         const int ccx = camBX >> CHUNK_SHIFT, ccz = camBZ >> CHUNK_SHIFT;
@@ -869,7 +548,7 @@ void Renderer::renderScene(const World& w) {
     }
 
     const float cpx = camPos[0], cpy = camPos[1], cpz = camPos[2];
-    int budget = shaders ? REBUILDS_PER_FRAME : WINDOW_CHUNKS * WINDOW_CHUNKS;
+    int budget = WINDOW_CHUNKS * WINDOW_CHUNKS;
     meshPending = false;
 
     // Overlay faces (glass frames) invert what is behind them, so they go in
@@ -879,12 +558,10 @@ void Renderer::renderScene(const World& w) {
         for (int sx = 0; sx < WINDOW_CHUNKS; sx++) {
             ChunkMesh& cm = chunkMesh[sx][sz];
             if (nearOnly && (sx != onlySX || sz != onlySZ)) {
-                if (!cm.faces.empty() || !cm.masks.empty()) {
+                if (!cm.faces.empty()) {
                     cm.cx = cm.cz = -1;
                     cm.faces.clear();
                     cm.faces.shrink_to_fit();
-                    cm.masks.clear();
-                    cm.masks.shrink_to_fit();
                 }
                 continue;
             }
@@ -900,7 +577,7 @@ void Renderer::renderScene(const World& w) {
                     budget--;
                 } else {
                     meshPending = true;
-                    // A stale bake still draws; another chunk's faces cannot.
+                    // A stale list still draws; another chunk's faces cannot.
                     if (cm.cx != cx || cm.cz != cz) continue;
                 }
             }
@@ -909,15 +586,7 @@ void Renderer::renderScene(const World& w) {
             const bool clip = bx0 < winX0 || bx0 + CHUNK_MASK > winX1 ||
                               bz0 < winZ0 || bz0 + CHUNK_MASK > winZ1;
 
-            // Masked faces consume their mask in face order, culled or not.
-            size_t maskAt = 0;
             for (uint32_t f : cm.faces) {
-                const uint32_t sun = (f >> 27) & 3;
-                const uint8_t* mask = nullptr;
-                if (sun == 2) {
-                    if (maskAt + 8 <= cm.masks.size()) mask = cm.masks.data() + maskAt;
-                    maskAt += 8;
-                }
                 if ((int)((f >> 23) & TS_OVERLAY) != pass) continue;
                 const int gx = bx0 + (f & 7), gz = bz0 + ((f >> 3) & 7);
                 if (clip && (gx < winX0 || gx > winX1 || gz < winZ0 || gz > winZ1))
@@ -930,8 +599,7 @@ void Renderer::renderScene(const World& w) {
                         (float)(((fc.axis == 0 ? gx : (fc.axis == 1 ? y : gz)) << 4) + fc.off);
                     if (fc.neg ? cam >= plane : cam <= plane) continue;
                 }
-                drawBlockQuad(gx, y, gz, quad, (uint8_t)((f >> 15) & 0xFF), (f >> 23) & 0xF,
-                              0, mask);
+                drawBlockQuad(gx, y, gz, quad, (uint8_t)((f >> 15) & 0xFF), (f >> 23) & 0xF);
             }
         }
 }
