@@ -135,7 +135,8 @@ static float ridged(float x, float z, uint32_t salt, int octaves) {
 // One byte per column: bits 0-3 terrain top y (1..10), then biome flags.
 // A pure function of global (x, z), cached per tile.
 
-constexpr uint8_t COL_TOP = 0x0F, COL_DESERT = 0x10, COL_RAVINE = 0x20, COL_FOREST = 0x40;
+constexpr uint8_t COL_TOP = 0x0F, COL_DESERT = 0x10, COL_RAVINE = 0x20, COL_FOREST = 0x40,
+                  COL_RIVER = 0x80; // the byte's last free bit
 
 static uint8_t g_col[TILE_W * TILE_W];
 
@@ -189,8 +190,27 @@ static uint8_t computeColumn(int x, int z) {
     if(top < 1) top = 1;
     if(top > 10) top = 10;
 
+    // A ravine that cuts down to the local water table becomes a river: its
+    // floor is flattened to `bed` and fillTerrain pours two blocks of water on
+    // top, so the surface is level along a whole stretch and steps only where
+    // the continent field does. `bed` is the smooth land height (no detail, no
+    // hills) minus three; dry land, always within +-0.55 of that smooth
+    // height, therefore never sits below bed+2 -- exactly the water surface --
+    // so the banks hold and the engine's flow settles instead of spreading. A
+    // ravine whose floor stays above bed+2 is left as a dry gully.
+    bool river = false;
+    if(ravineDepth > 0) {
+        int bed = (int)(1.4f + continent * 1.6f + 0.5f);
+        if(bed < 1) bed = 1;
+        if(bed > 8) bed = 8;
+        if(top <= bed + 2) {
+            top = bed;
+            river = true;
+        }
+    }
+
     return (uint8_t)(top | (desert ? COL_DESERT : 0) | (ravineDepth > 0 ? COL_RAVINE : 0) |
-                     (forest ? COL_FOREST : 0));
+                     (forest ? COL_FOREST : 0) | (river ? COL_RIVER : 0));
 }
 
 // Callers stay >= 1 column inside the tile (feature margins), so the 3x3
@@ -430,7 +450,11 @@ static void fillTerrain(uint8_t* ch, int bx0, int bz0) {
                 }
                 ch[(y * CHUNK + lz) * CHUNK + lx] = id;
             }
-            for(int y = top + 1; y <= SEA_LEVEL; y++) ch[(y * CHUNK + lz) * CHUNK + lx] = WATER;
+            // Sea fills every low column to SEA_LEVEL, a river to its own
+            // bed + 2; the lowest beds sit at 1, so a river reaching the coast
+            // meets the sea at exactly the same surface.
+            const int waterTop = (c & COL_RIVER) ? top + 2 : SEA_LEVEL;
+            for(int y = top + 1; y <= waterTop; y++) ch[(y * CHUNK + lz) * CHUNK + lx] = WATER;
         }
 }
 
